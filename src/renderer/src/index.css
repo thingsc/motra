@@ -1,0 +1,39 @@
+@tailwind base;
+@tailwind components;
+@tailwind utilities;
+
+@layer base {
+  html, body, #root {
+    height: 100%;
+  }
+  body {
+    font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', 'PingFang SC', 'Microsoft YaHei', sans-serif;
+    font-size: 14px;
+    -webkit-font-smoothing: antialiased;
+  }
+
+  /* 滚动条 (WebKit) */
+  ::-webkit-scrollbar {
+    width: 8px;
+    height: 8px;
+  }
+  ::-webkit-scrollbar-thumb {
+    background: #30363d;
+    border-radius: 4px;
+  }
+  ::-webkit-scrollbar-track {
+    background: transparent;
+  }
+}
+
+@layer components {
+  .btn-primary {
+    @apply px-3 py-1.5 rounded-md bg-accent text-white hover:bg-accent-hover transition-colors text-sm font-medium;
+  }
+  .btn-ghost {
+    @apply px-3 py-1.5 rounded-md bg-bg-raised hover:bg-bg-hover text-fg-base text-sm transition-colors;
+  }
+  .input-base {
+    @apply bg-bg-base border border-line rounded-md px-2 py-1 text-sm focus:outline-none focus:border-accent;
+  }
+}
