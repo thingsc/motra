@@ -16,6 +16,7 @@
     "verify": "node scripts/verify.mjs"
   },
   "dependencies": {
+    "@anthropic-ai/sdk": "^0.30.1",
     "@serialport/bindings-cpp": "^12.0.1",
     "serialport": "^12.0.0",
     "zustand": "^4.5.5"

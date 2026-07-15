@@ -1,65 +1,75 @@
-// IPC 处理器注册。所有渲染进程能调的接口都列在这里。
+// IPC 处理器注册。
+//
+// 与 v1 (CLI 模式) 的差异:
+//   - SessionManager 从 runtime.ts 取,而不是 sessions.ts 的单例(backend 注入)
+//   - cli:start 入参改成 StartCliOpts v2(model / system / sessionId / title)
+//   - 新增 settings:get / settings:set(用户改 API key / model / baseURL 时用)
+//   - 移除 cli:input 的"自动 Restart"逻辑:旧版是为了 spawn 进程死掉后复活,
+//     SDK 模式下没有进程,sendInput 直接报错给前端即可
 
 import { ipcMain, BrowserWindow } from 'electron'
-import { sessionManager } from './sessions'
+import { getSessionManager } from './runtime'
 import { serialManager, SerialManager } from './serial'
 import { openScopeWindow, getScopeWindow } from './windows'
-import { loadSessions, saveSessions } from './persistence'
+import {
+  loadSessions,
+  saveSessions,
+  loadSettings,
+  saveSettings,
+  type ProviderSettings
+} from './persistence'
+import { reloadBackend } from './runtime'
 import type {
   Session,
   StartCliOpts,
   Message,
   SerialCfgWire,
   SerialEvent,
-  SerialPortInfo
+  SerialPortInfo,
+  ProviderSettingsView
 } from '../shared/types'
 
-// 内存中的 session 列表,与子进程运行时为同一对象(简化:按 id 索引)
+// 内存中的 session 列表(对应磁盘 sessions.json 的当前视图)
 const sessions = new Map<string, Session>()
 
 export function registerIpc(getMainWindow: () => BrowserWindow | null): void {
+  const sessionManager = getSessionManager()
+
   // 把 sessionManager 的事件转发到所有渲染窗口
   sessionManager.on('cli:event', (e) => {
     const win = getMainWindow()
     if (win && !win.isDestroyed()) {
       win.webContents.send('cli:event', e)
     }
-    // 同步状态到内存中的 session(便于 list / 关窗持久化)
+    // 同步状态到内存中的 session
     const s = sessions.get(e.sessionId)
     if (!s) return
-    if (e.type === 'started') s.status = 'running'
+    if (e.type === 'started') s.status = 'idle'
     if (e.type === 'stdout' || e.type === 'stderr') {
-      // 把流式追加到当前正在生长的 assistant 消息(若有 user 在前)
-      appendAssistant(s, e.chunk)
+      // sessionManager 内部已经把流式文本写进 s.messages,这里不需要再 appendAssistant
+      // 只需要更新时间戳
+      s.updatedAt = Date.now()
+    }
+    if (e.type === 'turn-end') {
+      s.status = 'idle'
+      s.updatedAt = Date.now()
     }
     if (e.type === 'exit') {
       s.status = e.code === 0 ? 'idle' : 'error'
-      const last = s.messages[s.messages.length - 1]
-      if (last && last.streaming) last.streaming = false
-    }
-    if (e.type === 'session-init') {
-      // 记录 claude 端的 session-id,后续 Restart 时通过 --resume 续接
-      s.claudeSessionId = e.claudeSessionId
+      s.updatedAt = Date.now()
     }
     if (e.type === 'error') {
       s.status = 'error'
     }
-    s.updatedAt = Date.now()
-    persist().catch((err) => console.error('[ipc] persist failed:', err))
+    void persist().catch((err) => console.error('[ipc] persist failed:', err))
   })
 
   ipcMain.handle('cli:start', async (_evt, opts: StartCliOpts) => {
     const session = await sessionManager.start(opts)
-    // 保留老 session 的 messages / claudeSessionId(自动 Restart / 手动 Restart 时
-    // 不让 UI 历史丢,并且能通过 --resume 续接 claude 端上下文)。
-    // sessionManager.start 返回的对象 messages=[];如果磁盘/memory 里已有这个 sessionId
-    // 的历史,把 messages 和 claudeSessionId 复制过去。其他字段(cmd/args/status)以新启动为准。
     const old = sessions.get(session.id)
     if (old) {
+      // 保留老 messages(用户在 v1 → v2 迁移后能继续看到历史)
       if (old.messages.length > 0) session.messages = [...old.messages]
-      if (old.claudeSessionId && !session.claudeSessionId) {
-        session.claudeSessionId = old.claudeSessionId
-      }
     }
     sessions.set(session.id, session)
     await persist()
@@ -67,18 +77,28 @@ export function registerIpc(getMainWindow: () => BrowserWindow | null): void {
   })
 
   ipcMain.handle('cli:input', async (_evt, sessionId: string, text: string) => {
-    const s = sessions.get(sessionId)
-    if (s) {
-      // 主进程只负责自己的内存 + 持久化;渲染端 store 已经在 App.tsx submitMessage
-      // 里乐观 push 了 user 消息,这里不再回传,避免重复。
-      pushMessage(s, {
-        role: 'user',
-        content: text,
-        ts: Date.now()
+    let s = sessions.get(sessionId)
+    if (!s) {
+      // 重启场景:内存 sessions map 没了,但磁盘 sessions.json 还在。
+      // 从磁盘 reload,把 session 装回内存,并在 sessionManager 里 start 重建(只是
+      // 占位,不发起任何请求),把 messages 历史同步过去,这样多轮上下文能续上。
+      const disk = await loadSessions()
+      const found = disk.find((x) => x.id === sessionId)
+      if (!found) {
+        throw new Error(`session ${sessionId} not found`)
+      }
+      const rebuilt = await sessionManager.start({
+        sessionId: found.id,
+        model: found.model,
+        title: found.title
       })
-      await persist()
+      rebuilt.messages = [...found.messages]
+      sessions.set(rebuilt.id, rebuilt)
+      s = rebuilt
     }
+    // sessionManager.sendInput 内部会 push user 消息 + 触发流式回复
     sessionManager.sendInput(sessionId, text)
+    await persist()
   })
 
   ipcMain.handle('cli:kill', async (_evt, sessionId: string) => {
@@ -101,13 +121,72 @@ export function registerIpc(getMainWindow: () => BrowserWindow | null): void {
     await saveSessions(next)
   })
 
-  // 首次启动时,把磁盘的 session 装入内存(并杀掉任何尚存的进程)
-  void loadSessions().then((list) => {
-    for (const s of list) sessions.set(s.id, s)
+  // 首次启动时,把磁盘的 session 装入内存
+  // 同时也要塞进 SessionManager 内部 map,否则用户重启 app 后点开历史 session
+  // 直接续聊会撞到 "session not found"(前端 IPC map 有,但 SessionManager.sessions 空着)
+  void (async () => {
+    const list = await loadSessions()
+    const mgr = getSessionManager()
+    for (const found of list) {
+      const s = await mgr.start({
+        sessionId: found.id,
+        model: found.model,
+        title: found.title
+      })
+      // start() 创建的 session 是空 messages,这里把历史灌回去,这样 sendInput
+      // 时 backend 能拿到完整多轮上下文
+      s.messages = [...found.messages]
+      sessions.set(s.id, s)
+    }
+  })()
+
+  // ────────────────────────────────────────────────────────────────
+  // settings 通道 — 用户改 API key / baseURL / model 时调用
+  // ────────────────────────────────────────────────────────────────
+
+  ipcMain.handle('settings:get', async (): Promise<ProviderSettingsView> => {
+    // 不返回 providerApiKey 完整值(防 XSS / log 泄漏),只返回"是否已设置"
+    const s = await loadSettings()
+    return {
+      providerApiKey: s.providerApiKey ? '••••configured' : '',
+      providerBaseURL: s.providerBaseURL ?? 'https://api.deepseek.com/anthropic',
+      providerModel: s.providerModel ?? 'deepseek-chat',
+      providerMaxTokens: s.providerMaxTokens ?? 4096,
+      providerSystem: s.providerSystem ?? ''
+    }
+  })
+
+  ipcMain.handle('settings:set', async (_evt, patch: ProviderSettingsView) => {
+    // patch.providerApiKey 是脱敏后的值:
+    //   - '__keep__' → 不更新 key 字段(用户没改 key,保留旧值)
+    //   - ''         → 清空 key
+    //   - 其他        → 当真实 key 写入
+    const sanitized: ProviderSettings = { ...patch }
+    if (patch.providerApiKey === '__keep__') {
+      delete sanitized.providerApiKey
+    } else if (patch.providerApiKey === '') {
+      sanitized.providerApiKey = ''
+    }
+    // 其他情况直接写入(用户填了真实 key)
+    const next = await saveSettings(sanitized)
+    // 重建 backend 让新配置生效
+    await reloadBackend()
+    // 返回脱敏 view 给前端
+    return {
+      providerApiKey: next.providerApiKey ? '••••configured' : '',
+      providerBaseURL: next.providerBaseURL ?? 'https://api.deepseek.com/anthropic',
+      providerModel: next.providerModel ?? 'deepseek-chat',
+      providerMaxTokens: next.providerMaxTokens ?? 4096,
+      providerSystem: next.providerSystem ?? ''
+    }
   })
 
   // ────────────────────────────────────────────────────────────────
-  // 虚拟示波器(scope)通道 — 与 cli:* 并行
+  // 虚拟示波器(scope)通道 — 与 cli:* 并行(与 v1 一致)
+  // ────────────────────────────────────────────────────────────────
+
+  // ────────────────────────────────────────────────────────────────
+  // 虚拟示波器(scope)通道 — 与 cli:* 并行(与 v1 一致)
   // ────────────────────────────────────────────────────────────────
 
   ipcMain.handle('scope:open', async () => {
@@ -120,9 +199,7 @@ export function registerIpc(getMainWindow: () => BrowserWindow | null): void {
 
   ipcMain.handle('serial:open', async (_evt, cfg: SerialCfgWire) => {
     await serialManager.open(cfg)
-    // data 监听只 attach 一次(open 内部已 close 旧的,attacher 不会重复)
     serialManager.attachDataListener()
-    // open 完成后,把当前通道 / txFields 推到 scope 窗口,renderer 据此 sync 视图层
     const win = getScopeWindow()
     if (win && !win.isDestroyed()) {
       const cfg = serialManager.getCfg()
@@ -162,13 +239,6 @@ export function registerIpc(getMainWindow: () => BrowserWindow | null): void {
       nChannels
     }
     win.webContents.send('serial:event', evt)
-    if (process.env.MOTRA_SCOPE_DEMO === '1') {
-      try {
-        const fs = require('fs')
-        const line = `[${new Date().toISOString()}] frame nPairs=${nPairs} nChannels=${nChannels} first=${decoded[0]?.toFixed(1)},${decoded[1]?.toFixed(1)}\n`
-        fs.appendFileSync('/tmp/scope-trace.log', line)
-      } catch {}
-    }
   })
   serialManager.on('bytes', (chunk: Uint8Array) => {
     const win = getScopeWindow()
@@ -182,31 +252,6 @@ export function registerIpc(getMainWindow: () => BrowserWindow | null): void {
     const evt: SerialEvent = { type: 'status', status }
     win.webContents.send('serial:event', evt)
   })
-}
-
-// 把一条 stdout 流追加到 assistant 消息尾。
-function appendAssistant(s: Session, chunk: string): void {
-  const last = s.messages[s.messages.length - 1]
-  if (last && last.role === 'assistant' && last.streaming) {
-    last.content += chunk
-    return
-  }
-  pushMessage(s, {
-    role: 'assistant',
-    content: chunk,
-    ts: Date.now(),
-    streaming: true
-  })
-}
-
-function pushMessage(s: Session, m: Omit<Message, 'id'>): Message {
-  const msg: Message = { id: cryptoSafeRandomId(), ...m }
-  s.messages.push(msg)
-  return msg
-}
-
-function cryptoSafeRandomId(): string {
-  return Math.random().toString(36).slice(2, 10) + Date.now().toString(36)
 }
 
 async function persist(): Promise<void> {

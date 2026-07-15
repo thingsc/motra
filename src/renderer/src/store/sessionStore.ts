@@ -1,5 +1,5 @@
-// Zustand store - 第一步只覆盖 STEP 1 必要状态:
-//   sessions 列表 / 当前选中 / 是否开启 CLI 配置面板 / 启动参数(cmd, args, cwd)
+// Zustand store — 第二步只覆盖 STEP 1 必要状态:
+//   sessions 列表 / 当前选中 / 默认 provider / model / system
 //
 // 真实会话内容从主进程事件流回填,store 只做引用。
 
@@ -13,13 +13,14 @@ interface SessionStore {
   sessions: Record<string, Session>
   order: string[] // 按 updatedAt 倒序的 session id
   currentId: string | null
-  /** 有 in-flight 回复的 session id(stream-json 模式下 sendInput 后到 result event 之间) */
+  /** 有 in-flight 回复的 session id(sendInput 后到 turn-end 之间) */
   inflight: Set<string>
-  cliCmd: string
-  cliArgs: string
-  cliCwd: string
+  /** 默认模型(用于 New Session 时填进 Session.model) */
+  providerModel: string
+  /** 默认 system prompt */
+  providerSystem: string
 
-  setCli: (patch: Partial<Pick<SessionStore, 'cliCmd' | 'cliArgs' | 'cliCwd'>>) => void
+  setProvider: (patch: Partial<Pick<SessionStore, 'providerModel' | 'providerSystem'>>) => void
   hydrate: (list: Session[]) => void
   select: (id: string | null) => void
   upsert: (s: Session) => void
@@ -35,27 +36,28 @@ export const useSessionStore = create<SessionStore>((set, get) => ({
   order: [],
   currentId: null,
   inflight: new Set(),
-  cliCmd: 'claude',
-  // 默认走 stream-json 协议:子进程用 stdin/stdout 的 newline-delimited JSON
-  // 维持多轮 + 流式,避免 pipe stdin 触发 claude 的 --print 一次性模式。
-  // --include-partial-messages 让 claude 输出 stream_event(text_delta 增量),前端才能做流式
-  cliArgs: '--print --input-format stream-json --output-format stream-json --verbose --include-partial-messages',
-  cliCwd: '',
+  // 默认走 DeepSeek。settings 加载后可以被 SettingsPopover 覆盖。
+  providerModel: 'deepseek-chat',
+  providerSystem: '',
 
-  setCli: (patch) => set((s) => ({ ...s, ...patch })),
+  setProvider: (patch) => set((s) => ({ ...s, ...patch })),
 
   hydrate: (list) => {
     const map: Record<string, Session> = {}
     const order: string[] = []
-    const sorted = [...list].sort((a, b) => b.updatedAt - a.updatedAt)
+    const sorted = [...list].sort((a, b) => b.updatedAt - a.createdAt)
     for (const s of sorted) {
-      map[s.id] = { ...s, status: 'idle' } // 重启后所有进程都被视作 idle
+      // 重启后所有 session 都视作 idle(没有正在跑的 SDK 流)
+      map[s.id] = { ...s, status: 'idle' }
       order.push(s.id)
     }
+    // 把第一个 session 的 model 作为 UI 默认值
+    const firstModel = sorted[0]?.model ?? 'deepseek-chat'
     set({
       sessions: map,
       order,
-      currentId: order[0] ?? null
+      currentId: order[0] ?? null,
+      providerModel: firstModel
     })
   },
 
@@ -90,8 +92,12 @@ export const useSessionStore = create<SessionStore>((set, get) => ({
       const next: Session = { ...s, messages: [...s.messages], updatedAt: Date.now() }
 
       if (e.type === 'started') {
-        next.status = 'idle' // spawn 完仍然 idle,直到 sendInput 才 running
+        next.status = 'idle' // SDK 模式下 started 后立即 idle
       } else if (e.type === 'stdout' || e.type === 'stderr') {
+        // v2 SDK 模式下,SessionManager 自己维护一份 messages(给 backend 用),
+        // 但渲染端的 store.sessions 是独立副本,这里也要同步追加,否则 UI 看不到内容。
+        // 注意:append 行为必须在 next.messages(已经在上面 [...s.messages] 深拷)上做,
+        // 否则 React 不会 re-render。
         const last = next.messages[next.messages.length - 1]
         if (last && last.role === 'assistant' && last.streaming) {
           next.messages[next.messages.length - 1] = {
@@ -108,7 +114,6 @@ export const useSessionStore = create<SessionStore>((set, get) => ({
           })
         }
       } else if (e.type === 'turn-end') {
-        // stream-json 协议下,result event 表示这一轮结束
         next.status = 'idle'
         const last = next.messages[next.messages.length - 1]
         if (last && last.streaming) {
@@ -131,7 +136,6 @@ export const useSessionStore = create<SessionStore>((set, get) => ({
       } else if (e.type === 'error') {
         next.status = 'error'
       } else if (e.type === 'message') {
-        // 主进程告知一条 user/system 消息已落地
         next.messages.push(e.message)
       }
 

@@ -8,7 +8,8 @@ import type {
   Session,
   StartCliOpts,
   SerialCfgWire,
-  SerialEvent
+  SerialEvent,
+  ProviderSettingsView
 } from '../shared/types'
 
 const api: MotraApi = {
@@ -23,6 +24,9 @@ const api: MotraApi = {
     ipcRenderer.on('cli:event', listener)
     return () => ipcRenderer.removeListener('cli:event', listener)
   },
+  getSettings: () => ipcRenderer.invoke('settings:get'),
+  setSettings: (patch: ProviderSettingsView) =>
+    ipcRenderer.invoke('settings:set', patch),
 
   // scope 相关
   openScope: () => ipcRenderer.invoke('scope:open'),

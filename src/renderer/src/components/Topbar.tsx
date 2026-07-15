@@ -19,7 +19,7 @@ export function Topbar({ onRestart, busy }: Props): JSX.Element {
       <div className="font-semibold flex items-center gap-2">
         <span className="w-2 h-2 rounded-full bg-accent" />
         Motra
-        <span className="ml-2 text-xs text-fg-muted font-normal">step 1 · CLI pass-through</span>
+        <span className="ml-2 text-xs text-fg-muted font-normal">step 1 · SDK · DeepSeek</span>
       </div>
 
       <div className="flex-1" />
@@ -38,7 +38,7 @@ export function Topbar({ onRestart, busy }: Props): JSX.Element {
         onClick={() => void onRestart()}
         disabled={!currentId || busy}
         className="btn-ghost disabled:opacity-40"
-        title="重启当前 session 的 CLI 子进程"
+        title="停止当前 SDK 流(SDK 模式下没有进程,等价于 abort)"
       >
         Restart
       </button>

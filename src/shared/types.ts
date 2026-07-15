@@ -19,14 +19,29 @@ export interface Session {
   createdAt: number
   updatedAt: number
   status: SessionStatus
-  /** 启动该 session 用的 CLI 命令与参数,后续重启用于恢复 */
-  cmd: string
-  args: string[]
-  cwd?: string
+  /** 该会话使用的模型,例如 'deepseek-chat' / 'deepseek-reasoner' / 'claude-sonnet-4-5' */
+  model: string
+  /** 后端标识,目前固定 'sdk'。未来如果加回 CLI 模式可扩展 */
+  backend: 'sdk'
+  /** messages 数组保持不变,由主进程维护,用于多轮上下文续接 */
   messages: Message[]
-  /** claude CLI 在 stream-json init event 里返回的 session-id,
-   *  用来在 Restart 时通过 --resume 续接上下文。无值表示从未成功 init 过。 */
+  /** 兼容字段:v1 sessions.json 里可能有这些,新 session 不再写 */
+  cmd?: string
+  args?: string[]
+  cwd?: string
   claudeSessionId?: string
+}
+
+/** 持久化文件 schema 版本号。v1 = CLI 子进程模式;v2 = SDK 直连 provider */
+export const SESSIONS_FILE_VERSION = 2 as const
+
+/** renderer 端可见的 settings 形状。apiKey 字段已脱敏(只表示"是否已配置") */
+export interface ProviderSettingsView {
+  providerApiKey: string
+  providerBaseURL: string
+  providerModel: string
+  providerMaxTokens: number
+  providerSystem: string
 }
 
 // 主进程→渲染进程的事件载荷
@@ -49,14 +64,14 @@ export type CliEvent =
   | { sessionId: string; type: 'message'; message: Message }
 
 export interface StartCliOpts {
-  cmd: string
-  args?: string[]
-  cwd?: string
+  /** 模型名(必填)。例如 'deepseek-chat' / 'claude-sonnet-4-5' */
+  model: string
+  /** 会话 id(可选,不传则自动生成) */
   sessionId?: string
   /** 会话标题(可选,不传则自动生成) */
   title?: string
-  /** claude 端的 session-id,提供则自动加 --resume 续接上下文 */
-  resumeSessionId?: string
+  /** system prompt(可选) */
+  system?: string
 }
 
 // preload api 形状,renderer 通过 window.api 拿到
@@ -67,6 +82,10 @@ export interface MotraApi {
   listSessions: () => Promise<Session[]>
   deleteSession: (sessionId: string) => Promise<void>
   onCliEvent: (cb: (e: CliEvent) => void) => () => void
+  /** 读 provider 配置(apiKey 字段只返回是否已配置,不回明文) */
+  getSettings: () => Promise<ProviderSettingsView>
+  /** 写 provider 配置。写完自动重建 backend */
+  setSettings: (patch: ProviderSettingsView) => Promise<ProviderSettingsView>
   /** scope 窗口相关(主窗口只有 openScope 一个入口,其余仅 scope 窗口内部使用) */
   openScope: () => Promise<void>
   serialList: () => Promise<SerialPortInfo[]>

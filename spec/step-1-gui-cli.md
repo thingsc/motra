@@ -1,95 +1,105 @@
-# Motra · STEP 1 · GUI 包装 CLI
+# Motra · STEP 1 · GUI 包装(CLI 子进程 → SDK 直连 DeepSeek)
 
-> 详见 `index.md` 与 `../PLAN.md` §1。本文件对应第一步,所有 `<!-- verify:item -->{json}<-->` 块由 `scripts/verify.mjs` 自动读。
+> 详见 `index.md`。本文件对应第一步的合约文档。
+>
+> **v2 重大变更(2026-07-15)**:实现已从 `spawn('claude', ...)` 包装 CLI 子进程,
+> 切换为 `@anthropic-ai/sdk` 直连 provider API(默认 DeepSeek 的 Anthropic-compatible 端点)。
+> 切换原因:CLI 内部 MCP/工具加载 + stdin/stdout 序列化导致首 token 延迟大。
+> 直连后保留流式 token 增量、事件协议、UI 行为,渲染端零改动。
+>
+> 旧的"spawn-CLI" verify 项(`spec.cli.spawn` / `spec.cli.streaming`)继续作为
+> mock-based smoke(由 `scripts/lib/check-spawn-cli.mjs` 内置 mock runner 验证),
+> 但**不再验证真 `src/main/sessions.ts`**——因为后者已无 spawn 行为。
+> `spec.cli.spawn-real` 改为 soft,指向真 SDK + DeepSeek 的人工 smoke。
 
 ---
 
-## 0. 目标与范围
-
-对应 PLAN.md §1。**只承诺以下能力**,不超出:
+## 0. 目标与范围(v2)
 
 | 能力 | 说明 |
 |---|---|
 | 三栏桌面 GUI | Electron + Vite + React + Tailwind,深色配色 |
-| CLI 子进程包装 | 跑 `claude`(可配命令),stdout 流式回显 |
+| **SDK 直连 provider** | `@anthropic-ai/sdk` 直调 baseURL(默认 DeepSeek),流式回显 |
 | 多会话管理 | 新建 / 删除 / 切换;列表展示 title + 预览 + 时间戳 |
-| 持久化 | `userData/sessions.json`,关掉窗口再开历史仍在 |
+| 持久化 | `userData/sessions.json`(v2 schema),关掉窗口再开历史仍在 |
 | 受控 IPC | contextBridge 暴露 `window.api`,渲染端无 Node 直接访问 |
-| 暂停/恢复进程 | Stop 按钮 `kill`,Restart 重启 CLI 进程 |
+| Settings | Provider API key / baseURL / model / max_tokens / system prompt |
+| 暂停/恢复流 | Stop 按钮 `controller.abort()`,AbortController 立刻断 SDK 流 |
 
 **不承诺**(避免范围蔓延):
 
 - ❌ Tool calling / 多轮 agent 循环(STEP 2)
 - ❌ Diff / 权限弹窗 / MCP / 插件(STEP 3)
-- ❌ 重启 Electron 后恢复**正在跑**的进程(仅为简化做让步,见 §6)
+- ❌ Prompt caching(DeepSeek 不支持)
+- ❌ Extended thinking budget_tokens(DeepSeek 忽略)
 - ❌ 跨平台签名 / 打包(STEP 1 仅 dev 模式产物)
 
 ---
 
-## 1. 架构与 IPC 协议
+## 1. 架构与 IPC 协议(v2)
 
-### 1.1 进程模型
+### 1.1 进程模型(v2)
 
 ```
 ┌──────────────┐      ipcRenderer.invoke       ┌────────────────────────┐
 │  Renderer    │ ────────────────────────────► │ Main (ipcMain.handle)  │
-│  (React)     │                               │   ├─ SessionManager    │
-│              │ ◄────── webContents.send ──── │   ├─ Persistence       │
-│  window.api  │        (cli:event 推送)        │   └─ CLI child_process │
-└──────────────┘                               └────────────────────────┘
-         ▲
-         │ contextBridge.exposeInMainWorld('api', ...)
-         │
-   Preload (Node + isolation)
+│  (React)     │                               │   ├─ Runtime(Settings) │
+│              │ ◄────── webContents.send ──── │   ├─ SessionManager    │
+│  window.api  │        (cli:event 推送)        │   ├─ AgentBackend      │
+└──────────────┘                               │   │   (Anthropic SDK)   │
+         ▲                                      │   └─ Persistence       │
+         │ contextBridge.exposeInMainWorld      └────────────┬───────────┘
+         │                                                  │
+   Preload (Node + isolation)                                │ HTTPS
+                                                             ▼
+                                                  https://api.deepseek.com/anthropic
 ```
 
-- `nodeIntegration: false`、`contextIsolation: true`、`sandbox: false`
-- 渲染端只能通过 `window.api` 与主进程通信
-
-### 1.2 IPC 通道
+### 1.2 IPC 通道(v2)
 
 invoke 通道(渲染端 → 主进程):
 
 | 通道 | 入参 | 返回 | 说明 |
 |---|---|---|---|
-| `cli:start` | `StartCliOpts` | `Session` | 启动 CLI 子进程并落盘一条空 session |
-| `cli:input` | `(sessionId, text)` | `void` | 写一行 stdin |
-| `cli:kill` | `(sessionId)` | `void` | `SIGTERM` 该进程 |
+| `cli:start` | `StartCliOpts` v2(`model`, `system?`, `sessionId?`, `title?`) | `Session` | 创建 session,不发任何请求 |
+| `cli:input` | `(sessionId, text)` | `void` | 触发 backend 流式调用 |
+| `cli:kill` | `(sessionId)` | `void` | `AbortController.abort()` |
 | `cli:list` | — | `Session[]` | 从 sessions.json 读全部历史 |
 | `cli:delete` | `(sessionId)` | `void` | 从内存 + 磁盘移除 |
+| `settings:get` | — | `ProviderSettingsView` | apiKey 字段脱敏 |
+| `settings:set` | `ProviderSettingsView` | `ProviderSettingsView` | 写 settings.json + 重建 backend |
 
-事件通道(主进程 → 渲染端,单播):
+事件通道(主进程 → 渲染端,单播,与 v1 形状一致):
 
 | 事件 | 载荷 | 触发时机 |
 |---|---|---|
-| `started` | `{ sessionId, pid }` | 子进程 spawn 成功 |
-| `stdout` | `{ sessionId, chunk }` | 行切分后每段(chunk 总以 `\n` 结尾) |
-| `stderr` | `{ sessionId, chunk }` | 同 stdout |
-| `exit` | `{ sessionId, code, signal }` | 子进程退出(可能残留半行被 flush) |
-| `error` | `{ sessionId, message }` | spawn 失败 / 内部错 |
+| `started` | `{ sessionId, pid: -1 }` | SessionManager.start() |
+| `stdout` | `{ sessionId, chunk }` | backend 收到 `content_block_delta.text_delta` |
+| `stderr` | `{ sessionId, chunk }` | (保留位,目前未用) |
+| `turn-end` | `{ sessionId }` | SDK `finalMessage()` 拿到,标记流结束 |
+| `exit` | `{ sessionId, code, signal }` | 用户点 Stop / abort |
+| `error` | `{ sessionId, message }` | backend.stream.onError |
 
-### 1.3 `StartCliOpts`
+### 1.3 `StartCliOpts` v2
 
 ```ts
 interface StartCliOpts {
-  cmd: string         // 例: 'claude'
-  args?: string[]     // 例: ['--print']
-  cwd?: string        // 缺省 = process.cwd()
-  sessionId?: string  // 缺省 = uuid;同 id 已存在会被先 kill
-  title?: string      // 缺省 = 本地时间字符串
+  model: string         // 例: 'deepseek-chat' / 'claude-sonnet-4-5'
+  system?: string       // 可选 system prompt
+  sessionId?: string    // 缺省 = uuid;同 id 已存在会被先 kill
+  title?: string        // 缺省 = 本地时间字符串
 }
 ```
 
-### 1.4 行切分保证
+### 1.4 持久化字段(v2 schema)
 
-- 用 `node:string_decoder` 把 Buffer 解成 utf8 字符串,缓冲累积按 `/\r?\n/` 切。
-- 每条 `stdout` / `stderr` 事件的 `chunk` **总是以 `\n` 结尾**(半行在 `exit` 时 flush)。
-- 鉴权:`spawn(cmd, args, { env: process.env })` 透传,`~/.claude` 凭据自动可用。
+`Session` 形状(详见 `src/shared/types.ts`):
 
-### 1.5 渲染端契约
+- 必填:`id` / `title` / `createdAt` / `updatedAt` / `status` / `model` / `backend: 'sdk'` / `messages`
+- 已弃用(v1 字段,加载时丢弃):`cmd` / `args` / `cwd` / `claudeSessionId`
 
-`window.api` 必须存在(由 preload 注入),形状见 `src/shared/types.ts:MotraApi`。
-若渲染端意外下 preload 失败,要能在 500ms 内通过 IPC 收到第一帧事件。
+`sessions.json` payload: `{ version: 2, sessions: Session[] }`
+v1 → v2 迁移:`normalizeSession()` 兼容加载,丢 cli 字段,`model` 默认 `deepseek-chat`。
 
 ---
 
@@ -98,17 +108,15 @@ interface StartCliOpts {
 ```
 gui/
   src/
-    main/         {index.ts, ipc.ts, sessions.ts, persistence.ts}
+    main/         {index.ts, ipc.ts, sessions.ts, persistence.ts,
+                   agentBackend.ts, runtime.ts}
     preload/      {index.ts, index.d.ts}
     renderer/     index.html + src/{main.tsx, App.tsx, index.css,
                    components/{Topbar,Sidebar,ChatPane,Composer,SettingsPopover}.tsx,
                    store/{sessionStore.ts, id.ts}}
     shared/       types.ts
-  spec/           index.md + TEMPLATE.md + step-{1,2,3}-*.md
+  spec/           index.md + TEMPLATE.md + step-{1,2,3,4}-*.md
   scripts/        verify.mjs + lib/*.mjs      ← 本 SPEC 的执行器
-  SPEC.md         DEPRECATED 重定向到 spec/index.md
-  PLAN.md         上游设计文档
-  package.json    scripts.verify = node scripts/verify.mjs
 ```
 
 修改任一文件前先确认是否破坏下表中的可执行验收项。
@@ -162,9 +170,9 @@ gui/
 <!-- verify:item
 {
   "id": "spec.cli.spawn",
-  "name": "SessionManager 能 spawn 一个本地命令并捕获 started/stdout/exit 事件",
+  "name": "[v1 遗留] mock CliRunner 能 spawn 本地命令并捕获 started/stdout/exit 事件",
   "kind": "spawn-cli",
-  "critical": true,
+  "critical": false,
   "hook": "cli-spawn-with-starter-message",
   "args": {
     "cmd": "/bin/sh",
@@ -175,26 +183,26 @@ gui/
     "eventsSeen": ["started", "stdout (非空)", "exit"],
     "exitCode": 0
   },
-  "notes": "验证三件事:1) spawn 真的能起来(不报 ENOENT);2) 行切分 + 事件链线(observed/stderr/exit)正确;3) 退出码能拿到。注意不直接验证 claude CLI 行为——cli 客户端在 Electron 子进程环境里偶尔受 TTY/CLI trust 状态影响,放到 manual smoke 里验证。"
+  "notes": "v2 切换为 SDK 直连后,本项由 scripts/lib/check-spawn-cli.mjs 的内置 mock runner 继续验证 spawn + 行切分 + 事件链线。它**不再验证 src/main/sessions.ts**——后者已无 spawn 行为。保留 critical=false 是为了向后兼容旧 verify 流水线。"
 }
 -->
 
 <!-- verify:item
 {
   "id": "spec.cli.spawn-real",
-  "name": "在手工 smoke 中跑过 `claude -p` 一次性对话(soft)",
+  "name": "[v2 manual] 跑过真 SDK + DeepSeek 端到端对话(soft)",
   "kind": "manual-note",
   "critical": false,
-  "notes": "手动跑:`npm run dev` → New Session → Composer 输 '你好,只回答两个字' → 能看到流式回显。失败时多半是 ~/.claude 凭据状态或 PATH 问题,跟 spec.cli.spawn 解耦。"
+  "notes": "手动跑(替换 v1 的 `claude -p`):Settings 填 DeepSeek API key → npm run dev → New Session → Composer 输 '你好,只回答两个字' → 看到流式回显。失败时多半是 API key 失效 / baseURL 配错 / DeepSeek 端点异常。spec.cli.spawn / spec.cli.streaming 自动化不依赖真 provider。"
 }
 -->
 
 <!-- verify:item
 {
   "id": "spec.cli.streaming",
-  "name": "多行 stdout 能被正确拆分成多个事件(行切分生效)",
+  "name": "[v1 遗留] mock CliRunner 多行 stdout 能正确拆分(行切分生效)",
   "kind": "spawn-cli",
-  "critical": true,
+  "critical": false,
   "hook": "cli-streaming-linetest",
   "args": {
     "cmd": "/bin/sh",
@@ -204,23 +212,23 @@ gui/
   "expect": {
     "stdoutSegmentsMin": 3
   },
-  "notes": "用 sh -c 模拟 5 行输出,verify 端要求至少 3 段 stdout 事件。"
+  "notes": "v2 不再适用真 sessions.ts(SDK 流不走 StringDecoder 行切分),由 mock runner 验证行切分语义保留。SDK 的 SSE 解析由 SDK 内部处理。"
 }
 -->
 
 <!-- verify:item
 {
   "id": "spec.persistence.roundtrip",
-  "name": "sessions.json 写一次能读回来,字段完整",
+  "name": "v2 sessions.json 写一次能读回来,字段(model/backend)完整",
   "kind": "persistence-roundtrip",
   "critical": true,
   "hook": "persistence-roundtrip",
   "args": {
     "session": {
-      "id": "sess-test-1234",
-      "title": "验收用会话",
-      "cmd": "claude",
-      "args": ["--print"],
+      "id": "sess-test-v2",
+      "title": "验收用会话 v2",
+      "model": "deepseek-chat",
+      "backend": "sdk",
       "messages": [
         { "role": "user", "content": "hi", "ts": 1700000000000 },
         { "role": "assistant", "content": "hello", "ts": 1700000001000, "streaming": false }
@@ -229,9 +237,9 @@ gui/
   },
   "expect": {
     "reloadedMessagesEqual": true,
-    "sessionTitleEquals": "验收用会话"
+    "sessionTitleEquals": "验收用会话 v2"
   },
-  "notes": "使用临时 userData 目录,不污染真实 ~/Library/Application Support。"
+  "notes": "v2 schema 用临时 userData 目录跑,model/backend 字段是必填的断言点。"
 }
 -->
 
@@ -265,7 +273,7 @@ gui/
   "name": "`npm run dev` 启动链路已手动验证过(soft,不复跑)",
   "kind": "manual-note",
   "critical": false,
-  "notes": "手动验证:`npm run dev` → 应弹窗并出现三栏 + 顶栏 + Composer。每次跑自动化会留 Electron GPU Helper / Renderer 残留进程,本 verify harness 选择不自动化它。build / typecheck 已经覆盖 dev 链路两侧。"
+  "notes": "手动验证:`npm run dev` → 应弹窗并出现三栏 + 顶栏 + Settings 弹窗可填 API key + Composer 提交后看到流式回显。每次跑自动化会留 Electron GPU Helper / Renderer 残留进程,本 verify harness 选择不自动化它。build / typecheck 已经覆盖 dev 链路两侧。"
 }
 -->
 
@@ -279,17 +287,17 @@ gui/
 ## 4. 安全边界
 
 - 渲染端 `nodeIntegration: false`、`contextIsolation: true`,**无任何 `require` 暴露**。
-- API key / 凭据走主进程 `process.env` / `userData/settings.json`,**绝不进 IPC 载荷**。
-- 子进程 stdin 写入仅做 `text + '\n'` 组合,不拼接 shell 命令(无 shell 注入面)。
+- API key 走主进程 `userData/settings.json`,**不进 IPC 载荷**——`settings:get` 返回脱敏 view(`'••••configured'` 或 `''`),真实 key 永远不离开主进程。
+- 子进程 stdin 写入路径已移除(SDK 模式下没有子进程)。
 
 ---
 
 ## 5. 持久化文件
 
-- 路径:`app.getPath('userData') + '/sessions.json'`
-- 格式:`{ version: 1, sessions: Session[] }`
-- 写策略:每次 session/消息变更后写一次(单文件 < 10KB,无 flush 压力)
-- 写流程:`fs.writeFile` 到 `tmp` → `fs.rename` 原子替换
+| 文件 | 路径 | 格式 | 写策略 |
+|---|---|---|---|
+| `sessions.json` | `app.getPath('userData') + '/sessions.json'` | `{ version: 2, sessions: Session[] }` | 每次 session/消息变更后写(原子 rename) |
+| `settings.json` | `app.getPath('userData') + '/settings.json'` | `ProviderSettings` | `settings:set` 时写;首次启动文件不存在给默认值 |
 
 ---
 
@@ -297,10 +305,10 @@ gui/
 
 | 议题 | 当前做法 | 重新评估时机 |
 |---|---|---|
-| 重启 Electron 复活正在跑的 CLI | 不复活,磁盘 session 状态重置为 `idle`,需用户点 Restart | STEP 2 引入 `node-pty` 时一起做 |
-| PTY / TTY | 用普通 `spawn` + 行切分 | CLI 若是交互式 TTY-only 时启用 `node-pty` |
-| 流式 token 节流 | 渲染端直接 setState,无 rAF 合并 | STEP 2 一次只发一条流时再做节流 |
-| `exited` 状态 | 与 `idle` 同色显示 | STEP 2 区分 idle / exited / error 三态 |
+| 多轮消息 token 累积 | 不压缩,直接发全量 history;超长会触发 SDK 报错 | STEP 2 引入 `compactMessages` |
+| 流式 token 节流 | 渲染端直接 setState,无 rAF 合并 | token 量大时再加节流 |
+| `exited` 状态 | 与 `idle` 同色显示 | 区分 idle / exited / error 三态 |
+| API key 不进 git | 依赖 userData 路径不入 git | (已满足) |
 
 ---
 
@@ -314,3 +322,21 @@ npm run verify -- --skip=spec.bootstrap.devserver   # 跳过非关键项
 ```
 
 退出码:全过 = 0,有 critical 失败 = 1。
+
+---
+
+## 8. 回退路径(分支隔离)
+
+所有改动都在 `step-1-pureAPI` 分支,main 保持 a6db2b3 不动。改崩了:
+
+```bash
+git checkout main
+git branch -D step-1-pureAPI
+```
+
+或保留分支但回到稳定状态:
+
+```bash
+git checkout step-1-pureAPI
+git reset --hard main
+```

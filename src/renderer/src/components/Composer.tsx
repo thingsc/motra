@@ -67,7 +67,7 @@ export function Composer({
         </div>
       </div>
       <div className="mt-1 text-[11px] text-fg-subtle">
-        Ctrl/Cmd + Enter 提交 · 输入文本会作为 stdin 喂给当前 session 的 CLI 子进程
+        Ctrl/Cmd + Enter 提交 · 输入文本会作为 user 消息发到 provider
       </div>
     </div>
   )

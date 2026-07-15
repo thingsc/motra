@@ -1,85 +1,167 @@
-// sessions.json 持久化:启动读、每次变更写。
-// 路径:app.getPath('userData')/sessions.json
+// 持久化两件事:
+//   1. sessions.json — 会话列表 + 消息历史(v1 = CLI 模式, v2 = SDK 模式)
+//   2. settings.json — provider 配置(apiKey / baseURL / model / maxTokens)
+//
+// 路径都在 app.getPath('userData'),不进 git。
 
 import { app } from 'electron'
 import { promises as fs } from 'node:fs'
 import path from 'node:path'
 import { randomUUID } from 'node:crypto'
 import type { Session } from '../shared/types'
+import { SESSIONS_FILE_VERSION } from '../shared/types'
 
-interface PersistShape {
-  version: 1
+// ──────────────────────────────────────────────────────────────
+// sessions.json
+// ──────────────────────────────────────────────────────────────
+
+interface PersistShapeV2 {
+  version: 2
   sessions: Session[]
 }
 
-let cache: Session[] | null = null
-let filePath: string | null = null
+interface PersistShapeV1 {
+  version: 1
+  sessions: Array<{
+    id?: string
+    title?: string
+    createdAt?: number
+    updatedAt?: number
+    status?: Session['status']
+    cmd?: string
+    args?: string[]
+    cwd?: string
+    messages?: Session['messages']
+    claudeSessionId?: string
+  }>
+}
 
-function getFilePath(): string {
-  if (filePath) return filePath
+let sessionsCache: Session[] | null = null
+let sessionsPath: string | null = null
+
+function getSessionsPath(): string {
+  if (sessionsPath) return sessionsPath
   const dir = app.getPath('userData')
-  filePath = path.join(dir, 'sessions.json')
-  return filePath
+  sessionsPath = path.join(dir, 'sessions.json')
+  return sessionsPath
 }
 
 export async function loadSessions(): Promise<Session[]> {
-  if (cache) return cache
-  const fp = getFilePath()
+  if (sessionsCache) return sessionsCache
+  const fp = getSessionsPath()
   try {
     const raw = await fs.readFile(fp, 'utf8')
-    const parsed = JSON.parse(raw) as PersistShape
+    const parsed = JSON.parse(raw) as PersistShapeV1 | PersistShapeV2
     if (parsed && Array.isArray(parsed.sessions)) {
-      cache = parsed.sessions.map(normalizeSession)
-      return cache
+      // v1 和 v2 都用同一个 normalizeSession 兼容
+      sessionsCache = parsed.sessions.map(normalizeSession)
+      return sessionsCache
     }
-    cache = []
-    return cache
-  } catch (err: unknown) {
-    // 文件不存在或损坏,给空数组
-    cache = []
-    return cache
+    sessionsCache = []
+    return sessionsCache
+  } catch {
+    sessionsCache = []
+    return sessionsCache
   }
 }
 
 export async function saveSessions(sessions: Session[]): Promise<void> {
-  cache = sessions
-  const fp = getFilePath()
-  const payload: PersistShape = { version: 1, sessions }
+  sessionsCache = sessions
+  const fp = getSessionsPath()
+  const payload: PersistShapeV2 = { version: SESSIONS_FILE_VERSION, sessions }
   await fs.mkdir(path.dirname(fp), { recursive: true })
-  // tmp 文件名要每次 unique,否则并发 saveSessions 会竞争同一个 tmp,
-  // 后写者覆盖前写者的内容,前者 rename 时后者已经 rename 走 → ENOENT
+  // tmp 文件名 unique,避免并发 save 竞争
   const tmp = `${fp}.tmp.${process.pid}.${Date.now()}.${Math.random().toString(36).slice(2, 8)}`
   await fs.writeFile(tmp, JSON.stringify(payload, null, 2), 'utf8')
   await fs.rename(tmp, fp)
 }
 
-// 把磁盘上的对象规整成 Session 形状,做最轻的兜底
-function normalizeSession(s: Partial<Session>): Session {
+/**
+ * 把磁盘对象规整成 v2 Session 形状。
+ * 兼容 v1:丢弃 cmd/args/cwd/claudeSessionId,补齐 model/backend 字段。
+ */
+function normalizeSession(s: Partial<Session> & PersistShapeV1['sessions'][number]): Session {
   return {
     id: s.id ?? cryptoRandomId(),
     title: s.title ?? 'Untitled',
     createdAt: s.createdAt ?? Date.now(),
     updatedAt: s.updatedAt ?? s.createdAt ?? Date.now(),
+    // v1 加载的 session 重启后默认 idle
     status: s.status ?? 'idle',
-    cmd: s.cmd ?? 'claude',
-    // 磁盘数据缺失 args 时的兜底:走 stream-json 协议,而不是裸 --print
-    // (裸 --print + pipe stdin 会被 claude 立刻要求 prompt,3s 后报错退出)
-    args: Array.isArray(s.args)
-      ? s.args
-      : [
-          '--print',
-          '--input-format',
-          'stream-json',
-          '--output-format',
-          'stream-json',
-          '--verbose',
-          '--include-partial-messages'
-        ],
-    cwd: s.cwd,
+    // v1 没有 model 字段,默认 deepseek-chat(STEP 1 直连方案默认 provider)
+    model: s.model ?? 'deepseek-chat',
+    backend: 'sdk',
     messages: Array.isArray(s.messages) ? s.messages : []
+    // cmd/args/cwd/claudeSessionId 故意丢弃——已经不用 CLI 了
   }
 }
 
 export function cryptoRandomId(): string {
   return randomUUID()
+}
+
+// ──────────────────────────────────────────────────────────────
+// settings.json — provider 配置
+// ──────────────────────────────────────────────────────────────
+
+export interface ProviderSettings {
+  /** provider API key(DeepSeek / Anthropic 等共用 x-api-key) */
+  providerApiKey?: string
+  /** Anthropic-compatible baseURL,默认 DeepSeek */
+  providerBaseURL?: string
+  /** 默认模型,例如 'deepseek-chat' */
+  providerModel?: string
+  /** 单轮 max_tokens */
+  providerMaxTokens?: number
+  /** 默认 system prompt */
+  providerSystem?: string
+}
+
+const DEFAULT_SETTINGS: Required<Omit<ProviderSettings, never>> = {
+  providerApiKey: '',
+  providerBaseURL: 'https://api.deepseek.com/anthropic',
+  providerModel: 'deepseek-chat',
+  providerMaxTokens: 4096,
+  providerSystem: ''
+}
+
+let settingsCache: ProviderSettings | null = null
+let settingsPath: string | null = null
+
+function getSettingsPath(): string {
+  if (settingsPath) return settingsPath
+  const dir = app.getPath('userData')
+  settingsPath = path.join(dir, 'settings.json')
+  return settingsPath
+}
+
+export async function loadSettings(): Promise<ProviderSettings> {
+  if (settingsCache) return settingsCache
+  const fp = getSettingsPath()
+  try {
+    const raw = await fs.readFile(fp, 'utf8')
+    const parsed = JSON.parse(raw) as ProviderSettings
+    settingsCache = { ...DEFAULT_SETTINGS, ...parsed }
+    return settingsCache
+  } catch {
+    settingsCache = { ...DEFAULT_SETTINGS }
+    return settingsCache
+  }
+}
+
+export async function saveSettings(patch: ProviderSettings): Promise<ProviderSettings> {
+  const current = await loadSettings()
+  settingsCache = { ...current, ...patch }
+  const fp = getSettingsPath()
+  await fs.mkdir(path.dirname(fp), { recursive: true })
+  const tmp = `${fp}.tmp.${process.pid}.${Date.now()}.${Math.random().toString(36).slice(2, 8)}`
+  await fs.writeFile(tmp, JSON.stringify(settingsCache, null, 2), 'utf8')
+  await fs.rename(tmp, fp)
+  return settingsCache
+}
+
+/** 测试用:把缓存清掉,下一次 load 重新读盘 */
+export function __resetPersistenceForTest(): void {
+  sessionsCache = null
+  settingsCache = null
 }
