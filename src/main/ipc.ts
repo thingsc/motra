@@ -2,8 +2,17 @@
 
 import { ipcMain, BrowserWindow } from 'electron'
 import { sessionManager } from './sessions'
+import { serialManager, SerialManager } from './serial'
+import { openScopeWindow, getScopeWindow } from './windows'
 import { loadSessions, saveSessions } from './persistence'
-import type { Session, StartCliOpts, Message } from '../shared/types'
+import type {
+  Session,
+  StartCliOpts,
+  Message,
+  SerialCfgWire,
+  SerialEvent,
+  SerialPortInfo
+} from '../shared/types'
 
 // 内存中的 session 列表,与子进程运行时为同一对象(简化:按 id 索引)
 const sessions = new Map<string, Session>()
@@ -95,6 +104,83 @@ export function registerIpc(getMainWindow: () => BrowserWindow | null): void {
   // 首次启动时,把磁盘的 session 装入内存(并杀掉任何尚存的进程)
   void loadSessions().then((list) => {
     for (const s of list) sessions.set(s.id, s)
+  })
+
+  // ────────────────────────────────────────────────────────────────
+  // 虚拟示波器(scope)通道 — 与 cli:* 并行
+  // ────────────────────────────────────────────────────────────────
+
+  ipcMain.handle('scope:open', async () => {
+    openScopeWindow()
+  })
+
+  ipcMain.handle('serial:list', async (): Promise<SerialPortInfo[]> => {
+    return SerialManager.listPorts()
+  })
+
+  ipcMain.handle('serial:open', async (_evt, cfg: SerialCfgWire) => {
+    await serialManager.open(cfg)
+    // data 监听只 attach 一次(open 内部已 close 旧的,attacher 不会重复)
+    serialManager.attachDataListener()
+    // open 完成后,把当前通道 / txFields 推到 scope 窗口,renderer 据此 sync 视图层
+    const win = getScopeWindow()
+    if (win && !win.isDestroyed()) {
+      const cfg = serialManager.getCfg()
+      win.webContents.send('serial:event', {
+        type: 'cfg',
+        channels: cfg.channels,
+        txFields: cfg.txFields
+      })
+    }
+  })
+
+  ipcMain.handle('serial:close', async () => {
+    serialManager.close()
+  })
+
+  ipcMain.handle('serial:send', async (_evt, values: number[]) => {
+    serialManager.sendCommand(values)
+  })
+
+  ipcMain.handle('serial:getCfg', async () => {
+    return serialManager.getCfg()
+  })
+
+  // 把 SerialManager 的事件转发到 scope 窗口(只发到 scope,不广播主窗口)
+  serialManager.removeAllListeners('frame')
+  serialManager.removeAllListeners('bytes')
+  serialManager.removeAllListeners('status')
+  serialManager.on('frame', (decoded: Float64Array) => {
+    const win = getScopeWindow()
+    if (!win || win.isDestroyed()) return
+    const nChannels = serialManager.getCfg().channels.length
+    const nPairs = decoded.length / nChannels
+    const evt: SerialEvent = {
+      type: 'frame',
+      payload: Array.from(decoded),
+      nPairs,
+      nChannels
+    }
+    win.webContents.send('serial:event', evt)
+    if (process.env.MOTRA_SCOPE_DEMO === '1') {
+      try {
+        const fs = require('fs')
+        const line = `[${new Date().toISOString()}] frame nPairs=${nPairs} nChannels=${nChannels} first=${decoded[0]?.toFixed(1)},${decoded[1]?.toFixed(1)}\n`
+        fs.appendFileSync('/tmp/scope-trace.log', line)
+      } catch {}
+    }
+  })
+  serialManager.on('bytes', (chunk: Uint8Array) => {
+    const win = getScopeWindow()
+    if (!win || win.isDestroyed()) return
+    const evt: SerialEvent = { type: 'bytes', payload: Array.from(chunk) }
+    win.webContents.send('serial:event', evt)
+  })
+  serialManager.on('status', (status) => {
+    const win = getScopeWindow()
+    if (!win || win.isDestroyed()) return
+    const evt: SerialEvent = { type: 'status', status }
+    win.webContents.send('serial:event', evt)
   })
 }
 

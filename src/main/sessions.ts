@@ -37,6 +37,8 @@ export class SessionManager extends EventEmitter {
   private sessionMeta = new Map<string, { claudeSessionId?: string }>()
   /** in-memory Session 对象引用(消息 / 状态等),用来 init event 后立刻更新字段 */
   private sessionObjects = new Map<string, Session>()
+  /** 是否已经为该进程日志过一次 text_delta(用于 first-text 标记) */
+  private _loggedText = false
 
   async start(opts: StartCliOpts): Promise<Session> {
     const id = opts.sessionId ?? cryptoRandomId()

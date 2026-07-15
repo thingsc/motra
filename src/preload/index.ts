@@ -2,7 +2,14 @@
 // 通过 contextBridge 把 MotraApi 注入到 window.api,renderer 只看得到这个对象。
 
 import { contextBridge, ipcRenderer } from 'electron'
-import type { MotraApi, CliEvent, Session, StartCliOpts } from '../shared/types'
+import type {
+  MotraApi,
+  CliEvent,
+  Session,
+  StartCliOpts,
+  SerialCfgWire,
+  SerialEvent
+} from '../shared/types'
 
 const api: MotraApi = {
   startCli: (opts: StartCliOpts) => ipcRenderer.invoke('cli:start', opts),
@@ -16,6 +23,20 @@ const api: MotraApi = {
     ipcRenderer.on('cli:event', listener)
     return () => ipcRenderer.removeListener('cli:event', listener)
   },
+
+  // scope 相关
+  openScope: () => ipcRenderer.invoke('scope:open'),
+  serialList: () => ipcRenderer.invoke('serial:list'),
+  serialOpen: (cfg: SerialCfgWire) => ipcRenderer.invoke('serial:open', cfg),
+  serialClose: () => ipcRenderer.invoke('serial:close'),
+  serialSend: (values: number[]) => ipcRenderer.invoke('serial:send', values),
+  serialGetCfg: () => ipcRenderer.invoke('serial:getCfg'),
+  onSerialEvent: (cb: (e: SerialEvent) => void) => {
+    const listener = (_evt: Electron.IpcRendererEvent, payload: SerialEvent): void => cb(payload)
+    ipcRenderer.on('serial:event', listener)
+    return () => ipcRenderer.removeListener('serial:event', listener)
+  },
+
   versions: {
     node: process.versions.node,
     electron: process.versions.electron,

@@ -9,6 +9,7 @@ import { runPersistence } from './check-persistence.mjs'
 import { runStaticCheck } from './check-static.mjs'
 import { runDevServer } from './check-devserver.mjs'
 import { runPackageJson } from './check-package-json.mjs'
+import { runScopeProtocol } from './check-scope-protocol.mjs'
 
 const REGISTRY = {
   build: runBuild,
@@ -18,6 +19,7 @@ const REGISTRY = {
   'static-check': runStaticCheck,
   'dev-server': runDevServer,
   'package-json': runPackageJson,
+  'scope-protocol': runScopeProtocol,
   'manual-note': runManualNote
 }
 

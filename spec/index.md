@@ -10,6 +10,7 @@
 | 阶段 | 文件 | 目标 | 实现状态 | 验证项数 |
 |---|---|---|---|---|
 | STEP 1 | `step-1-gui-cli.md` | 三栏 Electron GUI 包装 CLI 流式回显 + 持久化 | ✅ done | 9 verify items(6 critical + 3 soft) |
+| STEP 4 | `step-4-virtual-scope.md` | 侧栏工具箱分组 + 独立 BrowserWindow scope 窗口（mcb_host 协议移植）| ⏳ 进行中 | 见 `step-4-virtual-scope.md` |
 | STEP 2 | `step-2-agent.md` | SDK 直接驱动 + Tool Calling Agent(README-only 占位) | ⏳ 待做 | 0 verify items |
 | STEP 3 | `step-3-platform.md` | Diff 视图 / 权限系统 / MCP / 插件(占位) | ⏳ 待做 | 0 verify items |
 

@@ -12,6 +12,22 @@
     -webkit-font-smoothing: antialiased;
   }
 
+  /* scope 窗口用的颜色变量(SVG 内部 fill/stroke 用 CSS var 串起来) */
+  :root {
+    --scope-ch1: #58a6ff;
+    --scope-ch2: #f0883e;
+    --scope-ch3: #a371f7;
+    --scope-ch4: #3fb950;
+    --scope-ch5: #f778ba;
+    --scope-ch6: #ffd33d;
+    --scope-ch7: #76e3ea;
+    --scope-ch8: #e85a72;
+    --scope-grid: #494f58;
+    --scope-axis: #7d8590;
+    --scope-zero: #6e7681;
+    --scope-bg: #0d1117;
+  }
+
   /* 滚动条 (WebKit) */
   ::-webkit-scrollbar {
     width: 8px;
@@ -23,6 +39,17 @@
   }
   ::-webkit-scrollbar-track {
     background: transparent;
+  }
+
+  /* 去掉 number input 的原生上下箭头(WebKit + Firefox) */
+  input[type='number']::-webkit-outer-spin-button,
+  input[type='number']::-webkit-inner-spin-button {
+    -webkit-appearance: none;
+    margin: 0;
+  }
+  input[type='number'] {
+    -moz-appearance: textfield;
+    appearance: textfield;
   }
 }
 

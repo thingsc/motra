@@ -30,6 +30,7 @@
 | 步骤 | 文件 | 目标 | 状态 |
 |---|---|---|---|
 | STEP 1 | `step-1-gui-cli.md` | 三栏 Electron GUI 包装 CLI 流式回显 + 持久化 | ✅ 完成,代码在 `../src/` 与 `../scripts/` |
+| STEP 4 | `step-4-virtual-scope.md` | 侧栏工具箱分组 + 独立 BrowserWindow scope 窗口（mcb_host 协议移植）| ⏳ 进行中(STEP 1 之后的 sub-step,独立编号不影响 STEP 2/3 顺序) |
 | STEP 2 | `step-2-agent.md` | SDK 直接驱动 + Tool Calling Agent(4 内置工具 + 流式) | ⏳ 占位 |
 | STEP 3 | `step-3-platform.md` | Diff 视图 / 权限系统 / MCP / 插件 | ⏳ 占位 |
 

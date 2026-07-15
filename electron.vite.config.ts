@@ -26,13 +26,17 @@ export default defineConfig({
     plugins: [react()],
     resolve: {
       alias: {
-        '@': resolve(__dirname, 'src/renderer/src')
+        '@': resolve(__dirname, 'src/renderer/src'),
+        '@shared': resolve(__dirname, 'src/shared')
       }
     },
     build: {
       outDir: 'out/renderer',
       rollupOptions: {
-        input: { index: resolve(__dirname, 'src/renderer/index.html') }
+        input: {
+          index: resolve(__dirname, 'src/renderer/index.html'),
+          scope: resolve(__dirname, 'src/renderer/scope.html')
+        }
       }
     }
   }

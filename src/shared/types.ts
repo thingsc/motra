@@ -1,5 +1,7 @@
 // 跨进程共享类型:main / preload / renderer 共用。
 
+import type { RxChannel, TxField } from './scope'
+
 export type SessionStatus = 'idle' | 'running' | 'exited' | 'error'
 
 export interface Message {
@@ -65,10 +67,68 @@ export interface MotraApi {
   listSessions: () => Promise<Session[]>
   deleteSession: (sessionId: string) => Promise<void>
   onCliEvent: (cb: (e: CliEvent) => void) => () => void
+  /** scope 窗口相关(主窗口只有 openScope 一个入口,其余仅 scope 窗口内部使用) */
+  openScope: () => Promise<void>
+  serialList: () => Promise<SerialPortInfo[]>
+  serialOpen: (cfg: SerialCfgWire) => Promise<void>
+  serialClose: () => Promise<void>
+  serialSend: (values: number[]) => Promise<void>
+  serialGetCfg: () => Promise<{ channels: RxChannel[]; txFields: TxField[] }>
+  onSerialEvent: (cb: (e: SerialEvent) => void) => () => void
   /** 拿到当前 SPA 的 host 路径信息,主要用于调试 */
   versions: {
     node: string
     electron: string
     chrome: string
   }
+}
+
+/* ========================================================================== *
+ * 虚拟示波器(scope)扩展 — 与 cli:* 并行的第二条实时流
+ *
+ * 注:SerialCfg / FrameCfg / RxChannel / TxField 等具体定义在 ./scope.ts
+ * 这里只放 preload 用的"事件载荷 / API 形状"以避免 types.ts 被 scope.ts 反向依赖
+ * (renderer / main / preload 三端共用)。
+ * ========================================================================== */
+
+export interface SerialPortInfo {
+  path: string
+  friendlyName?: string
+}
+
+export interface SerialStatus {
+  isOpen: boolean
+  port: string
+  baud: number
+  bytesIn: number
+  framesIn: number
+  dropped: number
+  error: string | null
+}
+
+/**
+ * 主进程 → scope 窗口的事件载荷。
+ * 注意:frame 用 plain object 描述结构,实际数据通过 sharedArrayBuffer 风格的
+ * transferable 或按帧传 number[](本 sub-step 走 number[] 简化路径)。
+ */
+export type SerialEvent =
+  | { type: 'frame'; payload: number[]; nPairs: number; nChannels: number }
+  | { type: 'bytes'; payload: number[] }
+  | { type: 'cfg'; channels: RxChannel[]; txFields: TxField[] }
+  | { type: 'status'; status: SerialStatus }
+
+/** scope 窗口需要的 SerialCfg 形状(从 shared/scope 借,但避免深度耦合) */
+export interface SerialCfgWire {
+  port: string
+  baud: number
+  bytesize: 8
+  parity: 'N' | 'E' | 'O'
+  stopbits: 1 | 2
+  timeout: number
+}
+
+/** scope 窗口需要的 TxField 形状 */
+export interface TxFieldWire {
+  name: string
+  fmt: '<H' | '<h'
 }
