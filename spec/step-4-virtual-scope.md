@@ -41,7 +41,7 @@
                                                           │ loadFile('out/renderer/scope.html')
 ┌──────────────┐                                ┌─────────▼──────────────┐
 │  Renderer    │  window.api.serial.*           │  Scope BrowserWindow ★新│
-│  (scope 窗口)│ ─────────────────────────────► │   parent: mainWindow   │
+│  (scope 窗口)│ ─────────────────────────────► │   independent window    │
 │              │ ◄────── webContents.send ────  │   1000×720,独立 preload│
 │  <ScopeWindow│  (serial:frame/bytes/status)   │   serialManager 独占   │
 │   />         │                                └────────────────────────┘

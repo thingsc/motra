@@ -1,74 +1,27 @@
-import { useRef, useState, type KeyboardEvent } from 'react'
+import { useEffect, useRef, useState, type DragEvent, type KeyboardEvent } from 'react'
+import type { GitWorkspaceStatus } from '../../../shared/types'
+import { useAppStore } from '../app/useAppStore'
+import { translate } from '../app/i18n'
+import { Icon } from './common/Icon'
 
-interface Props {
-  disabled: boolean
-  placeholder?: string
-  onSubmit: (text: string) => void | Promise<void>
-  onStop?: () => void
-  running: boolean
-}
-
-export function Composer({
-  disabled,
-  placeholder,
-  onSubmit,
-  onStop,
-  running
-}: Props): JSX.Element {
-  const [text, setText] = useState('')
-  const taRef = useRef<HTMLTextAreaElement>(null)
-
-  const submit = (): void => {
-    const t = text.trim()
-    if (!t) return
-    setText('')
-    if (taRef.current) taRef.current.style.height = 'auto'
-    void onSubmit(t)
-  }
-
-  const onKey = (e: KeyboardEvent<HTMLTextAreaElement>): void => {
-    // Ctrl+Enter 提交(支持 IME:不阻止 Enter,只在 Ctrl/Cmd+Enter 时拦截)
-    if ((e.metaKey || e.ctrlKey) && e.key === 'Enter') {
-      e.preventDefault()
-      submit()
-    }
-  }
-
-  return (
-    <div className="border-t border-line p-3 bg-bg-panel">
-      <div className="flex items-end gap-2">
-        <textarea
-          ref={taRef}
-          value={text}
-          onChange={(e) => setText(e.target.value)}
-          onKeyDown={onKey}
-          disabled={disabled}
-          placeholder={
-            placeholder ?? '输入消息 ··· Ctrl+Enter 发送(留空会跳过)'
-          }
-          rows={2}
-          className="flex-1 resize-none bg-bg-base border border-line rounded-md px-3 py-2 text-sm focus:outline-none focus:border-accent disabled:opacity-60"
-          style={{ minHeight: 56, maxHeight: 240 }}
-        />
-        <div className="flex flex-col gap-2">
-          {running ? (
-            <button onClick={onStop} className="btn-ghost border border-danger text-danger">
-              Stop
-            </button>
-          ) : (
-            <button
-              onClick={submit}
-              disabled={disabled || !text.trim()}
-              className="btn-primary disabled:opacity-50"
-            >
-              Send
-            </button>
-          )}
-        </div>
-      </div>
-      <div className="mt-1 text-[11px] text-fg-subtle">
-        Ctrl/Cmd + Enter 提交 · 输入文本会作为 user 消息发到 provider
-      </div>
+interface Props { text:string; model:string; models:string[]; workspacePath?:string; running:boolean; busy:boolean; onText:(text:string)=>void; onSubmit:()=>void; onStop:()=>void; onModel:(model:string)=>void; onWorkspace:(path?:string)=>void }
+export function Composer(props:Props):JSX.Element {
+  const language=useAppStore(s=>s.language), recent=useAppStore(s=>s.recentWorkspaces), toast=useAppStore(s=>s.toast)
+  const t=(key:Parameters<typeof translate>[1]):string=>translate(language,key)
+  const [workspaceOpen,setWorkspaceOpen]=useState(false), [git,setGit]=useState<GitWorkspaceStatus|null>(null)
+  const ta=useRef<HTMLTextAreaElement>(null)
+  const models=props.models.includes(props.model)?props.models:[props.model,...props.models]
+  useEffect(()=>{if(!props.workspacePath){setGit(null);return} let live=true;void window.api.getGitStatus(props.workspacePath).then(status=>{if(live)setGit(status)});return()=>{live=false}},[props.workspacePath])
+  const openFolder=async():Promise<void>=>{const path=await window.api.selectWorkspace();setWorkspaceOpen(false);if(path)props.onWorkspace(path)}
+  const key=(e:KeyboardEvent<HTMLTextAreaElement>):void=>{if((e.ctrlKey||e.metaKey)&&e.key==='Enter'){e.preventDefault();if(!props.running&&!props.busy&&props.text.trim())props.onSubmit()}}
+  const drop=(e:DragEvent<HTMLTextAreaElement>):void=>{if(e.dataTransfer.files.length){e.preventDefault();toast(t('attachSoon'))}}
+  return <div className="composer-wrap"><div className="agent-composer">
+    <div className="context-bar">
+      <div className="relative"><button className="context-button" onClick={()=>setWorkspaceOpen(!workspaceOpen)} title={props.workspacePath}><Icon name="folder" size={15}/><span className="max-w-[260px] truncate">{props.workspacePath?.split(/[\\/]/).filter(Boolean).pop()||t('noWorkspace')}</span></button>{workspaceOpen&&<div className="workspace-menu"><div className="workspace-current">{props.workspacePath||t('noWorkspace')}</div>{recent.map(path=><button key={path} title={path} onClick={()=>{props.onWorkspace(path);setWorkspaceOpen(false)}}>{path}</button>)}<button onClick={()=>void openFolder()}>{t('openFolder')}</button>{props.workspacePath&&<button className="text-danger" onClick={()=>{props.onWorkspace(undefined);setWorkspaceOpen(false)}}>{t('clearWorkspace')}</button>}</div>}</div>
+      <span className="context-badge" title={t('localHelp')}>{t('local')}</span>
+      {props.workspacePath&&<span className="context-badge"><Icon name="branch" size={14}/>{git?.isRepository?<>{git.branch||'HEAD'}{git.dirty&&<i className="dirty-dot"/>}</>:t('noGit')}</span>}
     </div>
-  )
+    <textarea ref={ta} value={props.text} onChange={e=>props.onText(e.target.value)} onKeyDown={key} onDrop={drop} rows={3} placeholder={t('placeholder')} className="prompt-textarea" />
+    <div className="composer-toolbar"><button className="icon-button" title={t('attachSoon')} onClick={()=>toast(t('attachSoon'))}><Icon name="paperclip"/></button><button className="toolbar-pill" onClick={()=>toast(t('permissionSoon'))}><Icon name="shield" size={15}/>{t('askChanges')}</button><div className="flex-1"/><select value={props.model} onChange={e=>props.onModel(e.target.value)} className="model-select">{models.map(m=><option key={m}>{m}</option>)}</select>{props.running?<button className="send-button stop" title={t('stop')} onClick={props.onStop}><Icon name="stop"/></button>:<button className="send-button" title={t('send')} disabled={props.busy||!props.text.trim()} onClick={props.onSubmit}><Icon name="send"/></button>}</div>
+  </div></div>
 }

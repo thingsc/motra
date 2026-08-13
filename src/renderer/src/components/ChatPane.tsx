@@ -1,107 +1,23 @@
-import { useEffect, useRef } from 'react'
-import { useSessionStore } from '../store/sessionStore'
+import { useEffect, useRef, useState } from 'react'
 import type { Message } from '../../../shared/types'
+import { useSessionStore } from '../store/sessionStore'
+import { useAppStore } from '../app/useAppStore'
+import { translate } from '../app/i18n'
+import { MotraLogo } from './common/MotraLogo'
+import { Icon } from './common/Icon'
 
-export function ChatPane(): JSX.Element {
-  const currentId = useSessionStore((s) => s.currentId)
-  const session = useSessionStore((s) =>
-    s.currentId ? s.sessions[s.currentId] : undefined
-  )
-  const inflight = useSessionStore((s) => s.inflight)
-  const scrollRef = useRef<HTMLDivElement>(null)
-
-  // 流式追加 / 新消息 / inflight 出现/消失 都要滚到底
-  useEffect(() => {
-    const el = scrollRef.current
-    if (!el) return
-    el.scrollTop = el.scrollHeight
-  }, [session?.messages.length, currentId, inflight])
-
-  // 当前 session 是否在等回复(用于显示"思考中"指示)
-  const isInflight = currentId ? inflight.has(currentId) : false
-  // 只有"发了 user 但还没收到第一条 assistant text"时才显示完整 thinking
-  // —— 一旦 assistant message 出现,就把指示交给 message 自己的 streaming 圆点
-  const lastMsg = session?.messages[session.messages.length - 1]
-  const showThinking = isInflight && (!lastMsg || lastMsg.role === 'user')
-
-  if (!session) {
-    return (
-      <div className="flex-1 flex items-center justify-center text-fg-muted">
-        点左侧 New Session 开一个会话
-      </div>
-    )
-  }
-
-  return (
-    <section className="flex-1 flex flex-col min-w-0 bg-bg-base">
-      <div className="px-4 py-2 border-b border-line text-sm text-fg-muted flex items-center justify-between">
-        <div>
-          <span className="text-fg-base font-medium">{session.title}</span>
-          <span className="ml-3">
-            {session.cmd} {(session.args ?? []).join(' ')}
-          </span>
-        </div>
-        <div className="text-xs text-fg-subtle">id: {session.id.slice(0, 8)}</div>
-      </div>
-
-      <div ref={scrollRef} className="flex-1 overflow-y-auto px-4 py-3 space-y-3">
-        {session.messages.length === 0 && (
-          <div className="text-center text-fg-muted mt-12 text-sm">
-            还没有消息。 在下方输入框发条消息试试,例如 "hello, who are you?"
-          </div>
-        )}
-        {session.messages.map((m: Message) => (
-          <MessageBubble key={m.id} msg={m} />
-        ))}
-        {showThinking && <ThinkingIndicator />}
-      </div>
-    </section>
-  )
+export function ChatPane({ onRename, onDelete }: { onRename:(id:string,title:string)=>Promise<void>; onDelete:(id:string)=>void }):JSX.Element {
+  const currentId=useSessionStore(s=>s.currentId), session=useSessionStore(s=>s.currentId?s.sessions[s.currentId]:undefined), inflight=useSessionStore(s=>s.inflight)
+  const language=useAppStore(s=>s.language), scope=useAppStore(s=>s.scopeStatus)
+  const t=(key:Parameters<typeof translate>[1]):string=>translate(language,key), scroll=useRef<HTMLDivElement>(null), [menu,setMenu]=useState(false)
+  useEffect(()=>{const el=scroll.current;if(el)el.scrollTop=el.scrollHeight},[session?.messages, currentId, inflight])
+  const running=currentId?inflight.has(currentId):false, last=session?.messages.at(-1), thinking=running&&(!last||last.role==='user')
+  if(!session)return <section className="chat-page"><div className="window-drag-region"/><button className="scope-status" onClick={()=>void window.api.openScope()}><span className={`status-dot ${scope.isOpen?'online':''}`}/>{scope.isOpen?(scope.port||t('scopeConnected')):t('scopeOffline')}</button><div className="empty-state"><span className="text-accent"><MotraLogo size={88}/></span><h1>{t('welcome')}</h1></div></section>
+  const rename=async():Promise<void>=>{const value=window.prompt(t('rename'),session.title);if(value?.trim())await onRename(session.id,value)}
+  return <section className="chat-page"><div className="window-drag-region"/><header className="chat-topbar"><div className="min-w-0"><h1 className="truncate">{session.title}</h1></div><div className="relative"><button className="icon-button" onClick={()=>setMenu(!menu)}><Icon name="more"/></button>{menu&&<div className="task-menu"><button onClick={()=>{setMenu(false);void rename()}}><Icon name="edit" size={15}/>{t('rename')}</button><button className="text-danger" onClick={()=>{setMenu(false);onDelete(session.id)}}><Icon name="trash" size={15}/>{t('delete')}</button></div>}</div><button className="scope-status static" onClick={()=>void window.api.openScope()}><span className={`status-dot ${scope.isOpen?'online':''}`}/>{scope.isOpen?(scope.port||t('scopeConnected')):t('scopeOffline')}</button></header>
+    <div ref={scroll} className="message-scroll"><div className="message-flow">{session.messages.map(m=><MessageRow key={m.id} message={m} language={language}/>)}{thinking&&<div className="assistant-row thinking"><Dots/> {t('thinking')}</div>}</div></div>
+  </section>
 }
 
-function MessageBubble({ msg }: { msg: Message }): JSX.Element {
-  if (msg.role === 'system') {
-    return (
-      <div className="text-center text-xs text-fg-subtle italic">
-        {msg.content}
-      </div>
-    )
-  }
-  const isUser = msg.role === 'user'
-  return (
-    <div className={`flex ${isUser ? 'justify-end' : 'justify-start'}`}>
-      <div
-        className={`max-w-[80%] rounded-lg px-3 py-2 text-sm whitespace-pre-wrap break-words ${
-          isUser
-            ? 'bg-accent text-white'
-            : 'bg-bg-panel border border-line text-fg-base'
-        }`}
-      >
-        <div className="text-[10px] uppercase tracking-wide opacity-70 mb-1">
-          {isUser ? 'You' : 'Assistant'}
-          {msg.streaming && (
-            <span className="ml-2 inline-block w-1.5 h-1.5 align-middle bg-accent rounded-full animate-pulse" />
-          )}
-        </div>
-        {msg.content}
-      </div>
-    </div>
-  )
-}
-
-// inflight 期间、还没收到第一条 assistant text 之前显示的"思考中"提示。
-// 收到第一条 text_delta 后,ChatPane 会自动切走指示器,改由 assistant bubble 自己的 streaming 圆点接管。
-function ThinkingIndicator(): JSX.Element {
-  return (
-    <div className="flex justify-start" data-testid="thinking-indicator">
-      <div className="bg-bg-panel border border-line rounded-lg px-3 py-2 text-sm text-fg-muted flex items-center gap-2">
-        <span className="flex gap-1">
-          <span className="w-1.5 h-1.5 rounded-full bg-fg-muted animate-bounce [animation-delay:-0.3s]" />
-          <span className="w-1.5 h-1.5 rounded-full bg-fg-muted animate-bounce [animation-delay:-0.15s]" />
-          <span className="w-1.5 h-1.5 rounded-full bg-fg-muted animate-bounce" />
-        </span>
-        <span className="italic">思考中…</span>
-      </div>
-    </div>
-  )
-}
+function MessageRow({message,language}:{message:Message;language:'zh-CN'|'en'}):JSX.Element { const t=(k:Parameters<typeof translate>[1]):string=>translate(language,k);if(message.role==='system')return <div className="system-row">{message.content}</div>;if(message.role==='user')return <div className="user-row"><div className="message-label">{t('you')}</div><div>{message.content}</div></div>;return <div className="assistant-row"><div className="message-label">{t('assistant')}{message.streaming&&<span className="stream-dot"/>}</div><div>{message.content}</div></div> }
+function Dots():JSX.Element{return <span className="dots"><i/><i/><i/></span>}

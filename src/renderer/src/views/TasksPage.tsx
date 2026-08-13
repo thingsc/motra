@@ -1,0 +1,13 @@
+import { useMemo, useState } from 'react'
+import { useSessionStore } from '../store/sessionStore'
+import { useAppStore } from '../app/useAppStore'
+import { translate } from '../app/i18n'
+import { Icon } from '../components/common/Icon'
+
+export function TasksPage({onRename,onDelete}:{onRename:(id:string,title:string)=>Promise<void>;onDelete:(id:string)=>void}):JSX.Element{
+ const language=useAppStore(s=>s.language),setView=useAppStore(s=>s.setView),sessions=useSessionStore(s=>s.sessions),order=useSessionStore(s=>s.order),select=useSessionStore(s=>s.select),[query,setQuery]=useState(''),[editing,setEditing]=useState<string|null>(null),[title,setTitle]=useState('')
+ const t=(k:Parameters<typeof translate>[1]):string=>translate(language,k)
+ const list=useMemo(()=>order.map(id=>sessions[id]).filter(Boolean).filter(task=>{const q=query.trim().toLowerCase();return !q||task.title.toLowerCase().includes(q)||(task.workspacePath??'').toLowerCase().includes(q)||task.model.toLowerCase().includes(q)}),[order,sessions,query])
+ const open=(id:string):void=>{select(id);setView('chat')};const finish=async():Promise<void>=>{if(editing&&title.trim()){await onRename(editing,title);setEditing(null)}}
+ return <main className="content-page"><div className="window-drag-region"/><header className="page-header"><div><h1>{t('tasks')}</h1><p>{order.length} {t('tasks').toLowerCase()}</p></div></header><div className="page-body"><label className="search-box"><Icon name="search"/><input value={query} onChange={e=>setQuery(e.target.value)} placeholder={t('searchTasks')}/></label><div className="task-list">{list.length===0?<div className="empty-list">{order.length?t('noResults'):t('noTasks')}</div>:list.map(task=><article key={task.id} className="task-card" onClick={()=>open(task.id)}>{editing===task.id?<input autoFocus className="task-title-edit" value={title} onClick={e=>e.stopPropagation()} onChange={e=>setTitle(e.target.value)} onBlur={()=>void finish()} onKeyDown={e=>{if(e.key==='Enter')void finish();if(e.key==='Escape')setEditing(null)}}/>:<h2>{task.title}</h2>}<p>{task.messages.at(-1)?.content.replace(/\s+/g,' ').slice(0,120)||'—'}</p><div className="task-meta"><span>{task.workspacePath||t('noWorkspace')}</span><span>{task.model}</span><span>{new Date(task.updatedAt).toLocaleString(language)}</span></div><div className="task-card-actions"><button title={t('rename')} onClick={e=>{e.stopPropagation();setEditing(task.id);setTitle(task.title)}}><Icon name="edit"/></button><button title={t('delete')} onClick={e=>{e.stopPropagation();onDelete(task.id)}}><Icon name="trash"/></button></div></article>)}</div></div></main>
+}

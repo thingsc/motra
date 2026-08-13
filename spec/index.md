@@ -10,6 +10,7 @@
 | 阶段 | 文件 | 目标 | 实现状态 | 验证项数 |
 |---|---|---|---|---|
 | STEP 1 | `step-1-gui-cli.md` | 三栏 Electron GUI + 持久化(v2:`@anthropic-ai/sdk` 直连 DeepSeek,不走 CLI 子进程) | ✅ v2 done(`step-1-pureAPI` 分支) | 9 verify items(5 critical + 4 soft,其中 spec.cli.* / spec.cli.spawn-real 改为 v1-遗留 / manual) |
+| STEP 1.5 | `step-1.5-agent-gui.md` | Agent GUI、Task 草稿、Workspace、双语 Settings 与 Scope 状态 | ✅ 已实现 | 12 verify items（10 critical + 2 manual） |
 | STEP 4 | `step-4-virtual-scope.md` | 侧栏工具箱分组 + 独立 BrowserWindow scope 窗口（mcb_host 协议移植）| ⏳ 进行中 | 见 `step-4-virtual-scope.md` |
 | STEP 2 | `step-2-agent.md` | Tool Calling Agent(backend 抽象已在 STEP 1 v2 落地)| ⏳ 待做 | 0 verify items |
 | STEP 3 | `step-3-platform.md` | Diff 视图 / 权限系统 / MCP / 插件(占位) | ⏳ 待做 | 0 verify items |

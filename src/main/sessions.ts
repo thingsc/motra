@@ -67,7 +67,9 @@ export class SessionManager extends EventEmitter {
       status: 'idle',
       model: opts.model,
       backend: 'sdk',
-      messages: []
+      messages: [],
+      workspacePath: opts.workspacePath,
+      systemPrompt: opts.system
     }
     this.sessions.set(id, session)
     motraLog('start', `session=${id} model=${opts.model} backend=${this._backend.id}`)
@@ -159,6 +161,7 @@ export class SessionManager extends EventEmitter {
         history,
         userText: text,
         model: session.model,
+        system: session.systemPrompt || undefined,
         signal: controller.signal,
         onDelta,
         onDone,
@@ -195,6 +198,35 @@ export class SessionManager extends EventEmitter {
 
   isRunning(sessionId: string): boolean {
     return this.inflight.has(sessionId)
+  }
+
+  get(sessionId: string): Session | undefined {
+    return this.sessions.get(sessionId)
+  }
+
+  rename(sessionId: string, title: string): Session {
+    const session = this.sessions.get(sessionId)
+    if (!session) throw new Error(`session ${sessionId} not found`)
+    const normalized = title.replace(/\s+/g, ' ').trim()
+    if (!normalized) throw new Error('title must not be empty')
+    session.title = normalized
+    session.updatedAt = Date.now()
+    return session
+  }
+
+  updateContext(sessionId: string, patch: { model?: string; workspacePath?: string | null }): Session {
+    const session = this.sessions.get(sessionId)
+    if (!session) throw new Error(`session ${sessionId} not found`)
+    if (typeof patch.model === 'string') {
+      const model = patch.model.trim()
+      if (!model) throw new Error('model must not be empty')
+      session.model = model
+    }
+    if ('workspacePath' in patch) {
+      session.workspacePath = patch.workspacePath || undefined
+    }
+    session.updatedAt = Date.now()
+    return session
   }
 
   killAll(): void {

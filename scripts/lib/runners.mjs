@@ -10,6 +10,7 @@ import { runStaticCheck } from './check-static.mjs'
 import { runDevServer } from './check-devserver.mjs'
 import { runPackageJson } from './check-package-json.mjs'
 import { runScopeProtocol } from './check-scope-protocol.mjs'
+import { runAgentGui } from './check-agent-gui.mjs'
 
 const REGISTRY = {
   build: runBuild,
@@ -20,6 +21,7 @@ const REGISTRY = {
   'dev-server': runDevServer,
   'package-json': runPackageJson,
   'scope-protocol': runScopeProtocol,
+  'agent-gui': runAgentGui,
   'manual-note': runManualNote
 }
 

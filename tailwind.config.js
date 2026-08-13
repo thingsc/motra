@@ -10,20 +10,20 @@ export default {
       colors: {
         // Motra / VSCode-style dark palette
         bg: {
-          base: '#0d1117',
-          panel: '#161b22',
-          raised: '#1f262e',
-          hover: '#262d36'
+          base: '#11110f',
+          panel: '#171714',
+          raised: '#22221f',
+          hover: '#2c2c28'
         },
-        line: '#30363d',
+        line: '#373733',
         fg: {
-          base: '#e6edf3',
-          muted: '#7d8590',
-          subtle: '#6e7681'
+          base: '#ecebe7',
+          muted: '#999892',
+          subtle: '#6f6e69'
         },
         accent: {
-          DEFAULT: '#3fb950',
-          hover: '#2ea043'
+          DEFAULT: '#55c2d8',
+          hover: '#72d2e3'
         },
         danger: '#f85149',
         // 虚拟示波器(scope 窗口)专用

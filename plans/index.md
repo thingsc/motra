@@ -1,4 +1,4 @@
-# Motra · 三步开发计划 · 总览
+# Motra · 开发计划 · 总览
 
 > 本目录是 Motra 项目渐进落地计划的拆分源,旧版单文件 `../PLAN.md` 仅保留为 redirector。
 
@@ -25,11 +25,12 @@
 
 ---
 
-## 1. 三步一览
+## 1. 阶段一览
 
 | 步骤 | 文件 | 目标 | 状态 |
 |---|---|---|---|
 | STEP 1 | `step-1-gui-cli.md` | 三栏 Electron GUI + 持久化(v2:SDK 直连 DeepSeek,不再走 CLI 子进程) | ✅ v2 完成,代码在 `../src/` 与 `../scripts/`,见 `step-1-pureAPI` 分支 |
+| STEP 1.5 | `step-1.5-agent-gui.md` | Codex 风格 Agent GUI 基础：Task 草稿 / Workspace / 双语 / Settings / Scope 状态 | ✅ 已实现并通过 spec |
 | STEP 4 | `step-4-virtual-scope.md` | 侧栏工具箱分组 + 独立 BrowserWindow scope 窗口（mcb_host 协议移植）| ⏳ 进行中(STEP 1 之后的 sub-step,独立编号不影响 STEP 2/3 顺序) |
 | STEP 2 | `step-2-agent.md` | Tool Calling Agent(4 内置工具 + 流式);backend 抽象已在 STEP 1 v2 落地 | ⏳ 占位 |
 | STEP 3 | `step-3-platform.md` | Diff 视图 / 权限系统 / MCP / 插件 | ⏳ 占位 |
@@ -38,11 +39,12 @@
 
 ---
 
-## 2. 三步节奏建议
+## 2. 阶段节奏建议
 
 | 周次 | 工作量 | 里程碑 |
 |---|---|---|
 | W1 | 第一步 1.1–1.6 | 能跑通 Claude Code CLI 流式回显,三栏 UI |
+| W1.5 | STEP 1.5（8 个串行提交） | Codex 风格 GUI、Task 草稿、Workspace、双语与 Scope 状态联动 |
 | W2 | 第二步 2.1–2.5 | 内置 4 个工具,完整 agent loop |
 | W3–W4 | 第三步 3.1–3.5 | diff / 权限 / MCP / 插件依次落地 |
 
@@ -80,6 +82,7 @@ gui/
 │   ├── index.md        # 本文件
 │   ├── TEMPLATE.md     # 新步骤模板
 │   ├── step-1-gui-cli.md
+│   ├── step-1.5-agent-gui.md
 │   ├── step-2-agent.md
 │   └── step-3-platform.md
 ├── spec/               # 合约文档 + verify:item 块

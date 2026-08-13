@@ -2,7 +2,7 @@
 
 Motra 是一个面向电机开发与调试场景的桌面工作台。目前项目包含两个主要功能：
 
-- 基于 Anthropic-compatible API 的多会话 AI 对话界面，默认适配 DeepSeek；
+- 基于 Anthropic-compatible API 的 Task 工作台，支持草稿任务、Workspace、每任务模型与 System Prompt；
 - 通过串口连接电机控制板的独立虚拟示波器，支持多通道波形、HEX 数据查看和控制命令发送。
 
 项目仍在持续开发中。当前 AI 对话和虚拟示波器已经可以独立使用；让 AI 调用工具、读取波形以及操作工程文件的 Agent 能力尚未实现。
@@ -50,14 +50,16 @@ npm run dev
 
 ## 配置 AI Provider
 
-首次启动后，在主窗口顶部打开 **Settings**，填写：
+首次启动后，从 Sidebar 打开完整 **Settings** 页面，填写：
 
 - API Key
 - Anthropic-compatible Base URL
-- 模型名称
+- 默认模型和本地模型列表
 - 单轮最大输出 token 数
+- System Prompt
+- 主窗口语言（简体中文 / English）
 
-Settings 界面也提供了 System Prompt 输入框，但当前会话链路尚未把该字段传入模型请求，因此暂时不要依赖该配置。
+System Prompt 会在新 Task 第一次发送时冻结到该 Task，并真实传入后续模型请求；更改默认值不会覆盖已有 Task。
 
 默认配置面向 DeepSeek：
 
@@ -68,7 +70,7 @@ Model:    deepseek-chat
 
 也可以把 Base URL 和模型名称改为其他兼容 Anthropic Messages API 的服务。API Key 保存在 Electron 的 `userData/settings.json` 中，不会写入项目仓库；当前版本使用本机明文 JSON 存储，请不要在共享机器上保存敏感密钥。
 
-配置保存后，点击左侧 **New Session** 创建会话，然后在底部输入框发送消息。
+配置保存后，点击左侧 **New task** 进入草稿。草稿不会立即写入磁盘；发送第一条消息时才创建真实 Task。Composer 可以选择本地 Workspace，并只读显示 Git 分支与 dirty 状态。
 
 也可以通过环境变量提供 DeepSeek API Key：
 
@@ -154,7 +156,8 @@ ref/mcb_host/             Python 串口协议参考实现与 mock target
 
 ## 当前开发状态
 
-- 已完成：Electron 主界面、SDK 流式对话、会话持久化；
+- 已完成：Agent 风格双语主界面、Task 草稿、Workspace/Git 状态、完整 Settings；
+- 已完成：SDK 流式对话、v3 Task 持久化、单 Provider 多模型；
 - 已完成：独立虚拟示波器、串口收发、多通道显示；
 - 待实现：Tool Calling Agent；
 - 待实现：文件 Diff、权限、MCP 和插件系统；

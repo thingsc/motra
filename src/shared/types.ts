@@ -25,6 +25,10 @@ export interface Session {
   backend: 'sdk'
   /** messages 数组保持不变,由主进程维护,用于多轮上下文续接 */
   messages: Message[]
+  /** 每任务独立绑定的本地工作区；为空时仍可普通聊天 */
+  workspacePath?: string
+  /** 创建任务时冻结的 system prompt */
+  systemPrompt?: string
   /** 兼容字段:v1 sessions.json 里可能有这些,新 session 不再写 */
   cmd?: string
   args?: string[]
@@ -33,15 +37,38 @@ export interface Session {
 }
 
 /** 持久化文件 schema 版本号。v1 = CLI 子进程模式;v2 = SDK 直连 provider */
-export const SESSIONS_FILE_VERSION = 2 as const
+export const SESSIONS_FILE_VERSION = 3 as const
+
+export type AppLanguage = 'zh-CN' | 'en'
 
 /** renderer 端可见的 settings 形状。apiKey 字段已脱敏(只表示"是否已配置") */
 export interface ProviderSettingsView {
   providerApiKey: string
   providerBaseURL: string
   providerModel: string
+  providerModels: string[]
   providerMaxTokens: number
   providerSystem: string
+}
+
+export interface AppPreferences {
+  language: AppLanguage
+  recentWorkspaces: string[]
+}
+
+export type ProviderSettingsPatch = Partial<ProviderSettingsView>
+export type AppPreferencesPatch = Partial<AppPreferences>
+
+export interface GitWorkspaceStatus {
+  isRepository: boolean
+  branch: string | null
+  dirty: boolean
+  error?: string
+}
+
+export interface TaskContextPatch {
+  model?: string
+  workspacePath?: string | null
 }
 
 // 主进程→渲染进程的事件载荷
@@ -72,6 +99,7 @@ export interface StartCliOpts {
   title?: string
   /** system prompt(可选) */
   system?: string
+  workspacePath?: string
 }
 
 // preload api 形状,renderer 通过 window.api 拿到
@@ -81,13 +109,21 @@ export interface MotraApi {
   killCli: (sessionId: string) => Promise<void>
   listSessions: () => Promise<Session[]>
   deleteSession: (sessionId: string) => Promise<void>
+  renameTask: (sessionId: string, title: string) => Promise<Session>
+  updateTaskContext: (sessionId: string, patch: TaskContextPatch) => Promise<Session>
   onCliEvent: (cb: (e: CliEvent) => void) => () => void
   /** 读 provider 配置(apiKey 字段只返回是否已配置,不回明文) */
   getSettings: () => Promise<ProviderSettingsView>
   /** 写 provider 配置。写完自动重建 backend */
-  setSettings: (patch: ProviderSettingsView) => Promise<ProviderSettingsView>
+  setSettings: (patch: ProviderSettingsPatch) => Promise<ProviderSettingsView>
+  getPreferences: () => Promise<AppPreferences>
+  setPreferences: (patch: AppPreferencesPatch) => Promise<AppPreferences>
+  selectWorkspace: () => Promise<string | null>
+  getGitStatus: (workspacePath: string) => Promise<GitWorkspaceStatus>
   /** scope 窗口相关(主窗口只有 openScope 一个入口,其余仅 scope 窗口内部使用) */
   openScope: () => Promise<void>
+  getScopeStatus: () => Promise<SerialStatus>
+  onScopeStatus: (cb: (status: SerialStatus) => void) => () => void
   serialList: () => Promise<SerialPortInfo[]>
   serialOpen: (cfg: SerialCfgWire) => Promise<void>
   serialClose: () => Promise<void>

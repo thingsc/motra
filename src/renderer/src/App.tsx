@@ -1,125 +1,48 @@
-// App 入口:三栏 + 顶栏 + composer + IPC 流式订阅。
-// v2 (SDK 直连):不再有 cliCmd/cliArgs/cliCwd,改成 providerModel/providerSystem。
-
 import { useCallback, useEffect, useState } from 'react'
+import type { CliEvent, Session } from '../../shared/types'
+import { useSessionStore } from './store/sessionStore'
+import { useAppStore } from './app/useAppStore'
+import { translate } from './app/i18n'
 import { Sidebar } from './components/Sidebar'
 import { ChatPane } from './components/ChatPane'
 import { Composer } from './components/Composer'
-import { Topbar } from './components/Topbar'
-import { useSessionStore } from './store/sessionStore'
-import type { CliEvent, Session } from '../../shared/types'
+import { TasksPage } from './views/TasksPage'
+import { SettingsPage } from './views/SettingsPage'
+import { Dialog } from './components/common/Dialog'
+import { ToastHost } from './components/common/ToastHost'
 
-export default function App(): JSX.Element {
-  const providerModel = useSessionStore((s) => s.providerModel)
-  const providerSystem = useSessionStore((s) => s.providerSystem)
-  const currentId = useSessionStore((s) => s.currentId)
-  const sessionsMap = useSessionStore((s) => s.sessions)
-  const inflight = useSessionStore((s) => s.inflight)
-  const upsert = useSessionStore((s) => s.upsert)
-  const remove = useSessionStore((s) => s.remove)
-  const hydrate = useSessionStore((s) => s.hydrate)
-  const select = useSessionStore((s) => s.select)
-  const applyEvent = useSessionStore((s) => s.applyEvent)
-  const pushUserMessage = useSessionStore((s) => s.pushUserMessage)
-  const pushSystemMessage = useSessionStore((s) => s.pushSystemMessage)
-  const markInflight = useSessionStore((s) => s.markInflight)
-
-  const [busy, setBusy] = useState(false)
-  const [bootError, setBootError] = useState<string | null>(null)
-
-  // 首次加载:拉历史 + 订阅事件流
-  useEffect(() => {
-    void window.api.listSessions().then(hydrate).catch((err) => {
-      setBootError(String(err))
-    })
-    const unsub = window.api.onCliEvent((e: CliEvent) => applyEvent(e))
-    return () => unsub()
-  }, [hydrate, applyEvent])
-
-  const newSession = useCallback(async () => {
-    if (!window.api) return
-    setBusy(true)
-    try {
-      const session: Session = await window.api.startCli({
-        model: providerModel,
-        system: providerSystem || undefined,
-        title: `New ${new Date().toLocaleString('zh-CN')}`
-      })
-      upsert(session)
-      select(session.id)
-    } catch (err) {
-      setBootError(String(err))
-    } finally {
-      setBusy(false)
-    }
-  }, [providerModel, providerSystem, upsert, select])
-
-  const submitMessage = useCallback(
-    async (text: string) => {
-      if (!currentId) return
-      // 立刻 push user 消息到 store(乐观更新,不等主进程)
-      pushUserMessage(currentId, text)
-      markInflight(currentId, true)
-      try {
-        await window.api.sendInput(currentId, text)
-      } catch (err) {
-        markInflight(currentId, false)
-        pushSystemMessage(currentId, `发送失败: ${String(err)}`)
-      }
-    },
-    [currentId, pushUserMessage, pushSystemMessage, markInflight]
-  )
-
-  const stopCurrent = useCallback(async () => {
-    if (!currentId) return
-    await window.api.killCli(currentId)
-  }, [currentId])
-
-  const restartCurrent = useCallback(async () => {
-    if (!currentId) return
-    const s = sessionsMap[currentId]
-    if (!s) return
-    // SDK 模式下没有进程可"重启"——kill 等同于 abort 当前流。
-    // 想要"清空重开"可以删旧 session 再 new,这里只做 abort。
-    await window.api.killCli(currentId)
-  }, [currentId, sessionsMap])
-
-  const deleteSession = useCallback(
-    async (id: string) => {
-      await window.api.killCli(id)
-      await window.api.deleteSession(id)
-      remove(id)
-    },
-    [remove]
-  )
-
-  const current = currentId ? sessionsMap[currentId] : undefined
-  // SDK 模式下 SDK 流在 sendInput 后到 turn-end 之间为 inflight
-  const running = currentId ? inflight.has(currentId) : false
-
-  return (
-    <div className="h-full flex flex-col">
-      {bootError && (
-        <div className="bg-danger/15 text-danger text-xs px-3 py-1 border-b border-danger">
-          {bootError}
-        </div>
-      )}
-      <Topbar busy={busy} onRestart={restartCurrent} />
-      <div className="flex-1 flex min-h-0">
-        <Sidebar busy={busy} onNewSession={newSession} onDelete={deleteSession} />
-        <ChatPane />
-      </div>
-      <Composer
-        disabled={!current || busy}
-        running={running}
-        onSubmit={submitMessage}
-        onStop={stopCurrent}
-        placeholder={
-          current
-            ? `回车到 ${current.model} · Ctrl+Enter 发送`
-            : '先点左侧 New Session 开个会话'
-        }
-      />
-    </div>
-  )
+export default function App():JSX.Element{
+ const sessions=useSessionStore(s=>s.sessions),currentId=useSessionStore(s=>s.currentId),order=useSessionStore(s=>s.order),inflight=useSessionStore(s=>s.inflight),draft=useSessionStore(s=>s.draft),settings=useSessionStore(s=>s.settings),creating=useSessionStore(s=>s.creatingDraft)
+ const hydrate=useSessionStore(s=>s.hydrate),setSettings=useSessionStore(s=>s.setSettings),upsert=useSessionStore(s=>s.upsert),select=useSessionStore(s=>s.select),remove=useSessionStore(s=>s.remove),applyEvent=useSessionStore(s=>s.applyEvent),pushUser=useSessionStore(s=>s.pushUserMessage),pushSystem=useSessionStore(s=>s.pushSystemMessage),markInflight=useSessionStore(s=>s.markInflight),patchDraft=useSessionStore(s=>s.patchDraft),newDraft=useSessionStore(s=>s.newDraft),setCreating=useSessionStore(s=>s.setCreatingDraft)
+ const view=useAppStore(s=>s.view),setView=useAppStore(s=>s.setView),language=useAppStore(s=>s.language),setLanguage=useAppStore(s=>s.setLanguage),setRecent=useAppStore(s=>s.setRecentWorkspaces),setScope=useAppStore(s=>s.setScopeStatus),toast=useAppStore(s=>s.toast)
+ const [deleteId,setDeleteId]=useState<string|null>(null),t=(k:Parameters<typeof translate>[1]):string=>translate(language,k)
+ useEffect(()=>{let live=true;Promise.all([window.api.listSessions(),window.api.getSettings(),window.api.getPreferences(),window.api.getScopeStatus()]).then(([list,provider,prefs,scope])=>{if(!live)return;hydrate(list);setSettings(provider);setLanguage(prefs.language);setRecent(prefs.recentWorkspaces);patchDraft({workspacePath:prefs.recentWorkspaces[0]});setScope(scope)}).catch(err=>toast(`${t('loadingFailed')}: ${String(err)}`,'error'));const offCli=window.api.onCliEvent((event:CliEvent)=>applyEvent(event));const offScope=window.api.onScopeStatus(setScope);return()=>{live=false;offCli();offScope()}},[hydrate,setSettings,setLanguage,setRecent,setScope,applyEvent,patchDraft])
+ const current=currentId?sessions[currentId]:undefined,running=currentId?inflight.has(currentId):false,text=draft.text,model=current?.model??draft.model,workspace=current?.workspacePath??draft.workspacePath
+ const startDraft=():void=>{newDraft(useAppStore.getState().recentWorkspaces[0]);setView('chat')}
+ const titleFor=(value:string):string=>{const clean=value.replace(/\s+/g,' ').trim();return clean.length>30?`${clean.slice(0,30)}…`:clean}
+ const submit=useCallback(async()=>{
+  const message=useSessionStore.getState().draft.text.trim()
+  if(!message||creating||running)return
+  if(currentId){
+   pushUser(currentId,message);markInflight(currentId,true)
+   try{await window.api.sendInput(currentId,message);patchDraft({text:''})}
+   catch(err){markInflight(currentId,false);pushSystem(currentId,`${t('sendFailed')}: ${String(err)}`)}
+   return
+  }
+  setCreating(true)
+  try{
+   const state=useSessionStore.getState()
+   const task:Session=await window.api.startCli({model:state.draft.model,title:titleFor(message),system:state.settings.providerSystem||undefined,workspacePath:state.draft.workspacePath})
+   upsert(task);select(task.id);pushUser(task.id,message);markInflight(task.id,true)
+   try{await window.api.sendInput(task.id,message);patchDraft({text:''})}
+   catch(err){markInflight(task.id,false);pushSystem(task.id,`${t('sendFailed')}: ${String(err)}`)}
+  }catch(err){toast(`${t('sendFailed')}: ${String(err)}`,'error')}
+  finally{setCreating(false)}
+ },[currentId,creating,running,pushUser,markInflight,patchDraft,pushSystem,setCreating,upsert,select,language])
+ const stop=():void=>{if(currentId)void window.api.killCli(currentId)}
+ const rename=async(id:string,title:string):Promise<void>=>{if(!title.trim()){toast(t('invalidTitle'),'error');return}const task=await window.api.renameTask(id,title);upsert(task)}
+ const confirmDelete=async():Promise<void>=>{if(!deleteId)return;await window.api.killCli(deleteId);await window.api.deleteSession(deleteId);remove(deleteId);setDeleteId(null);if(currentId===deleteId){newDraft(useAppStore.getState().recentWorkspaces[0]);setView('chat')}}
+ const updateModel=async(next:string):Promise<void>=>{if(current){const task=await window.api.updateTaskContext(current.id,{model:next});upsert(task)}else patchDraft({model:next})}
+ const updateWorkspace=async(next?:string):Promise<void>=>{if(current){const label=next?t('switchWorkspace'):t('clearWorkspaceTitle');if(!window.confirm(`${label}\n${t('switchWorkspaceHint')}`))return;const task=await window.api.updateTaskContext(current.id,{workspacePath:next??null});upsert(task)}else patchDraft({workspacePath:next});if(next){const prefs=await window.api.getPreferences();setRecent(prefs.recentWorkspaces)}}
+ return <div className="app-shell"><Sidebar onNewTask={startDraft} onRename={rename} onDelete={setDeleteId}/><div className="main-column">{view==='chat'&&<><ChatPane onRename={rename} onDelete={setDeleteId}/><Composer text={text} model={model} models={settings.providerModels} workspacePath={workspace} running={running} busy={creating} onText={value=>patchDraft({text:value})} onSubmit={()=>void submit()} onStop={stop} onModel={next=>void updateModel(next)} onWorkspace={next=>void updateWorkspace(next)}/></>}{view==='tasks'&&<TasksPage onRename={rename} onDelete={setDeleteId}/>} {view==='settings'&&<SettingsPage/>}</div><ToastHost/>{deleteId&&<Dialog title={t('deleteTask')} confirmLabel={t('delete')} cancelLabel={t('cancel')} danger onConfirm={()=>void confirmDelete()} onCancel={()=>setDeleteId(null)}>{t('deleteHint')}</Dialog>}</div>
 }

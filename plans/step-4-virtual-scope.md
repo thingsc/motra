@@ -66,7 +66,7 @@
 |---|---|
 | 尺寸 | 1000 × 720 |
 | 最小 | 800 × 500 |
-| `parent` | 主窗口 |
+| `parent` | 不设置（与主窗口独立移动） |
 | `title` | `虚拟示波器 — Motra` |
 | `backgroundColor` | `#0d1117` |
 | `webPreferences.preload` | 复用 `out/preload/index.mjs` |

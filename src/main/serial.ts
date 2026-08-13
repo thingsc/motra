@@ -153,7 +153,7 @@ export class SerialManager extends EventEmitter<SerialManagerEvents> {
   }
 
   /** 暴露给 IPC 用的 status 快照 */
-  getStatus(port: string, baud: number): SerialStatus {
+  getStatus(port = this.port?.path ?? '', baud = this.port?.baudRate ?? 0): SerialStatus {
     return {
       isOpen: this.isOpen,
       port,

@@ -7,7 +7,10 @@
 //   - 移除 cli:input 的"自动 Restart"逻辑:旧版是为了 spawn 进程死掉后复活,
 //     SDK 模式下没有进程,sendInput 直接报错给前端即可
 
-import { ipcMain, BrowserWindow } from 'electron'
+import { ipcMain, BrowserWindow, dialog, app, type OpenDialogOptions } from 'electron'
+import { promises as fs } from 'node:fs'
+import { execFile } from 'node:child_process'
+import { promisify } from 'node:util'
 import { getSessionManager } from './runtime'
 import { serialManager, SerialManager } from './serial'
 import { openScopeWindow, getScopeWindow } from './windows'
@@ -16,6 +19,8 @@ import {
   saveSessions,
   loadSettings,
   saveSettings,
+  loadPreferences,
+  savePreferences,
   type ProviderSettings
 } from './persistence'
 import { reloadBackend } from './runtime'
@@ -28,6 +33,8 @@ import type {
   SerialPortInfo,
   ProviderSettingsView
 } from '../shared/types'
+
+const execFileAsync = promisify(execFile)
 
 // 内存中的 session 列表(对应磁盘 sessions.json 的当前视图)
 const sessions = new Map<string, Session>()
@@ -90,7 +97,9 @@ export function registerIpc(getMainWindow: () => BrowserWindow | null): void {
       const rebuilt = await sessionManager.start({
         sessionId: found.id,
         model: found.model,
-        title: found.title
+        title: found.title,
+        system: found.systemPrompt,
+        workspacePath: found.workspacePath
       })
       rebuilt.messages = [...found.messages]
       sessions.set(rebuilt.id, rebuilt)
@@ -121,6 +130,25 @@ export function registerIpc(getMainWindow: () => BrowserWindow | null): void {
     await saveSessions(next)
   })
 
+  ipcMain.handle('task:rename', async (_evt, sessionId: string, title: string) => {
+    const normalized = requireNonEmptyString(title, 'title')
+    const session = sessionManager.rename(requireNonEmptyString(sessionId, 'sessionId'), normalized)
+    sessions.set(session.id, session)
+    await persist()
+    return session
+  })
+
+  ipcMain.handle('task:updateContext', async (_evt, sessionId: string, patch: { model?: string; workspacePath?: string | null }) => {
+    requireNonEmptyString(sessionId, 'sessionId')
+    if (!patch || typeof patch !== 'object') throw new Error('invalid context patch')
+    if (patch.model !== undefined) requireNonEmptyString(patch.model, 'model')
+    if (patch.workspacePath) await assertDirectory(patch.workspacePath)
+    const session = sessionManager.updateContext(sessionId, patch)
+    sessions.set(session.id, session)
+    await persist()
+    return session
+  })
+
   // 首次启动时,把磁盘的 session 装入内存
   // 同时也要塞进 SessionManager 内部 map,否则用户重启 app 后点开历史 session
   // 直接续聊会撞到 "session not found"(前端 IPC map 有,但 SessionManager.sessions 空着)
@@ -131,7 +159,9 @@ export function registerIpc(getMainWindow: () => BrowserWindow | null): void {
       const s = await mgr.start({
         sessionId: found.id,
         model: found.model,
-        title: found.title
+        title: found.title,
+        system: found.systemPrompt,
+        workspacePath: found.workspacePath
       })
       // start() 创建的 session 是空 messages,这里把历史灌回去,这样 sendInput
       // 时 backend 能拿到完整多轮上下文
@@ -151,12 +181,13 @@ export function registerIpc(getMainWindow: () => BrowserWindow | null): void {
       providerApiKey: s.providerApiKey ? '••••configured' : '',
       providerBaseURL: s.providerBaseURL ?? 'https://api.deepseek.com/anthropic',
       providerModel: s.providerModel ?? 'deepseek-chat',
+      providerModels: s.providerModels ?? ['deepseek-chat', 'deepseek-reasoner'],
       providerMaxTokens: s.providerMaxTokens ?? 4096,
       providerSystem: s.providerSystem ?? ''
     }
   })
 
-  ipcMain.handle('settings:set', async (_evt, patch: ProviderSettingsView) => {
+  ipcMain.handle('settings:set', async (_evt, patch: Partial<ProviderSettingsView>) => {
     // patch.providerApiKey 是脱敏后的值:
     //   - '__keep__' → 不更新 key 字段(用户没改 key,保留旧值)
     //   - ''         → 清空 key
@@ -176,8 +207,49 @@ export function registerIpc(getMainWindow: () => BrowserWindow | null): void {
       providerApiKey: next.providerApiKey ? '••••configured' : '',
       providerBaseURL: next.providerBaseURL ?? 'https://api.deepseek.com/anthropic',
       providerModel: next.providerModel ?? 'deepseek-chat',
+      providerModels: next.providerModels ?? ['deepseek-chat'],
       providerMaxTokens: next.providerMaxTokens ?? 4096,
       providerSystem: next.providerSystem ?? ''
+    }
+  })
+
+  ipcMain.handle('preferences:get', async () => {
+    const settings = await loadSettings()
+    const preferences = await loadPreferences()
+    if (!settings.languageConfigured) {
+      preferences.language = app.getLocale().toLowerCase().startsWith('zh') ? 'zh-CN' : 'en'
+    }
+    return preferences
+  })
+  ipcMain.handle('preferences:set', async (_evt, patch) => savePreferences(patch ?? {}))
+
+  ipcMain.handle('workspace:select', async () => {
+    const win = getMainWindow()
+    const options: OpenDialogOptions = { properties: ['openDirectory', 'createDirectory'] }
+    const result = win
+      ? await dialog.showOpenDialog(win, options)
+      : await dialog.showOpenDialog(options)
+    if (result.canceled || !result.filePaths[0]) return null
+    const selected = result.filePaths[0]
+    await assertDirectory(selected)
+    const preferences = await loadPreferences()
+    await savePreferences({ recentWorkspaces: [selected, ...preferences.recentWorkspaces.filter((p) => p !== selected)].slice(0, 5) })
+    return selected
+  })
+
+  ipcMain.handle('workspace:getGitStatus', async (_evt, workspacePath: string) => {
+    const directory = requireNonEmptyString(workspacePath, 'workspacePath')
+    await assertDirectory(directory)
+    try {
+      const top = await execGit(directory, ['rev-parse', '--show-toplevel'])
+      if (!top.trim()) return { isRepository: false, branch: null, dirty: false }
+      const branch = (await execGit(directory, ['branch', '--show-current'])).trim() || null
+      const dirty = (await execGit(directory, ['status', '--porcelain', '--untracked-files=normal'])).trim().length > 0
+      return { isRepository: true, branch, dirty }
+    } catch (err) {
+      const message = err instanceof Error ? err.message : String(err)
+      if (/not a git repository/i.test(message)) return { isRepository: false, branch: null, dirty: false }
+      return { isRepository: false, branch: null, dirty: false, error: message }
     }
   })
 
@@ -192,6 +264,7 @@ export function registerIpc(getMainWindow: () => BrowserWindow | null): void {
   ipcMain.handle('scope:open', async () => {
     openScopeWindow()
   })
+  ipcMain.handle('scope:getStatus', async () => serialManager.getStatus())
 
   ipcMain.handle('serial:list', async (): Promise<SerialPortInfo[]> => {
     return SerialManager.listPorts()
@@ -248,10 +321,28 @@ export function registerIpc(getMainWindow: () => BrowserWindow | null): void {
   })
   serialManager.on('status', (status) => {
     const win = getScopeWindow()
-    if (!win || win.isDestroyed()) return
-    const evt: SerialEvent = { type: 'status', status }
-    win.webContents.send('serial:event', evt)
+    if (win && !win.isDestroyed()) {
+      const evt: SerialEvent = { type: 'status', status }
+      win.webContents.send('serial:event', evt)
+    }
+    const main = getMainWindow()
+    if (main && !main.isDestroyed()) main.webContents.send('scope:status', status)
   })
+}
+
+function requireNonEmptyString(value: unknown, name: string): string {
+  if (typeof value !== 'string' || !value.trim()) throw new Error(`${name} must be a non-empty string`)
+  return value.trim()
+}
+
+async function assertDirectory(directory: string): Promise<void> {
+  const stat = await fs.stat(directory)
+  if (!stat.isDirectory()) throw new Error('workspace path is not a directory')
+}
+
+async function execGit(cwd: string, args: string[]): Promise<string> {
+  const { stdout } = await execFileAsync('git', args, { cwd, timeout: 3000, maxBuffer: 1024 * 1024 })
+  return stdout
 }
 
 async function persist(): Promise<void> {

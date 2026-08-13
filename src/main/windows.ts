@@ -49,11 +49,12 @@ function pickEntryUrl(subpath: string): { devUrl: string; prodFile: string } {
 export function createMainWindow(): BrowserWindow {
   const win = new BrowserWindow({
     width: 1280,
-    height: 800,
+    height: 820,
     minWidth: 900,
-    minHeight: 600,
+    minHeight: 640,
     title: 'Motra',
-    backgroundColor: '#0d1117',
+    backgroundColor: '#11110f',
+    titleBarStyle: 'hiddenInset',
     show: false,
     webPreferences: { ...SHARED_WEB_PREFERENCES }
   })
@@ -73,7 +74,8 @@ export function createMainWindow(): BrowserWindow {
 }
 
 /**
- * 打开/激活 scope 窗口(独立 BrowserWindow,1000×720,parent=main)。
+ * 打开/激活 scope 窗口(独立 BrowserWindow,1000×720)。
+ * 不设置 parent，避免 macOS 将它视为会跟随主窗口移动的子窗口。
  * 已存在则 focus,否则新建。scope 窗口加载 renderer 的 scope.html 子入口。
  */
 export function openScopeWindow(): BrowserWindow {
@@ -82,7 +84,6 @@ export function openScopeWindow(): BrowserWindow {
     return scopeWindowRef
   }
 
-  const parent = getMainWindow() ?? undefined
   const win = new BrowserWindow({
     width: 1000,
     height: 720,
@@ -91,7 +92,6 @@ export function openScopeWindow(): BrowserWindow {
     title: '虚拟示波器 — Motra',
     backgroundColor: '#0d1117',
     show: false,
-    parent,
     webPreferences: { ...SHARED_WEB_PREFERENCES }
   })
 

@@ -8,7 +8,7 @@ import { app } from 'electron'
 import { promises as fs } from 'node:fs'
 import path from 'node:path'
 import { randomUUID } from 'node:crypto'
-import type { Session } from '../shared/types'
+import type { AppLanguage, AppPreferences, Session } from '../shared/types'
 import { SESSIONS_FILE_VERSION } from '../shared/types'
 
 // ──────────────────────────────────────────────────────────────
@@ -16,7 +16,7 @@ import { SESSIONS_FILE_VERSION } from '../shared/types'
 // ──────────────────────────────────────────────────────────────
 
 interface PersistShapeV2 {
-  version: 2
+  version: 2 | 3
   sessions: Session[]
 }
 
@@ -38,6 +38,7 @@ interface PersistShapeV1 {
 
 let sessionsCache: Session[] | null = null
 let sessionsPath: string | null = null
+let sessionsReadFailed = false
 
 function getSessionsPath(): string {
   if (sessionsPath) return sessionsPath
@@ -55,17 +56,22 @@ export async function loadSessions(): Promise<Session[]> {
     if (parsed && Array.isArray(parsed.sessions)) {
       // v1 和 v2 都用同一个 normalizeSession 兼容
       sessionsCache = parsed.sessions.map(normalizeSession)
+      sessionsReadFailed = false
       return sessionsCache
     }
     sessionsCache = []
     return sessionsCache
-  } catch {
+  } catch (err: unknown) {
+    if ((err as NodeJS.ErrnoException)?.code !== 'ENOENT') sessionsReadFailed = true
     sessionsCache = []
     return sessionsCache
   }
 }
 
 export async function saveSessions(sessions: Session[]): Promise<void> {
+  if (sessionsReadFailed) {
+    throw new Error('sessions.json could not be read; refusing to overwrite it')
+  }
   sessionsCache = sessions
   const fp = getSessionsPath()
   const payload: PersistShapeV2 = { version: SESSIONS_FILE_VERSION, sessions }
@@ -91,7 +97,9 @@ function normalizeSession(s: Partial<Session> & PersistShapeV1['sessions'][numbe
     // v1 没有 model 字段,默认 deepseek-chat(STEP 1 直连方案默认 provider)
     model: s.model ?? 'deepseek-chat',
     backend: 'sdk',
-    messages: Array.isArray(s.messages) ? s.messages : []
+    messages: Array.isArray(s.messages) ? s.messages : [],
+    workspacePath: typeof s.workspacePath === 'string' && s.workspacePath ? s.workspacePath : undefined,
+    systemPrompt: typeof s.systemPrompt === 'string' ? s.systemPrompt : undefined
     // cmd/args/cwd/claudeSessionId 故意丢弃——已经不用 CLI 了
   }
 }
@@ -111,18 +119,28 @@ export interface ProviderSettings {
   providerBaseURL?: string
   /** 默认模型,例如 'deepseek-chat' */
   providerModel?: string
+  /** 单 Provider 下维护的本地模型名 */
+  providerModels?: string[]
   /** 单轮 max_tokens */
   providerMaxTokens?: number
   /** 默认 system prompt */
   providerSystem?: string
+  /** 主窗口语言与最近工作区属于应用偏好，但共用原子 settings 文件 */
+  language?: AppLanguage
+  languageConfigured?: boolean
+  recentWorkspaces?: string[]
 }
 
 const DEFAULT_SETTINGS: Required<Omit<ProviderSettings, never>> = {
   providerApiKey: '',
   providerBaseURL: 'https://api.deepseek.com/anthropic',
   providerModel: 'deepseek-chat',
+  providerModels: ['deepseek-chat', 'deepseek-reasoner'],
   providerMaxTokens: 4096,
-  providerSystem: ''
+  providerSystem: '',
+  language: 'en',
+  languageConfigured: false,
+  recentWorkspaces: []
 }
 
 let settingsCache: ProviderSettings | null = null
@@ -141,7 +159,7 @@ export async function loadSettings(): Promise<ProviderSettings> {
   try {
     const raw = await fs.readFile(fp, 'utf8')
     const parsed = JSON.parse(raw) as ProviderSettings
-    settingsCache = { ...DEFAULT_SETTINGS, ...parsed }
+    settingsCache = normalizeSettings({ ...DEFAULT_SETTINGS, ...parsed })
     return settingsCache
   } catch {
     settingsCache = { ...DEFAULT_SETTINGS }
@@ -151,7 +169,7 @@ export async function loadSettings(): Promise<ProviderSettings> {
 
 export async function saveSettings(patch: ProviderSettings): Promise<ProviderSettings> {
   const current = await loadSettings()
-  settingsCache = { ...current, ...patch }
+  settingsCache = normalizeSettings({ ...current, ...patch })
   const fp = getSettingsPath()
   await fs.mkdir(path.dirname(fp), { recursive: true })
   const tmp = `${fp}.tmp.${process.pid}.${Date.now()}.${Math.random().toString(36).slice(2, 8)}`
@@ -160,8 +178,49 @@ export async function saveSettings(patch: ProviderSettings): Promise<ProviderSet
   return settingsCache
 }
 
+export async function loadPreferences(): Promise<AppPreferences> {
+  const settings = await loadSettings()
+  return {
+    language: settings.language === 'zh-CN' ? 'zh-CN' : 'en',
+    recentWorkspaces: normalizeRecentWorkspaces(settings.recentWorkspaces)
+  }
+}
+
+export async function savePreferences(patch: Partial<AppPreferences>): Promise<AppPreferences> {
+  const next = await saveSettings({
+    ...(patch.language ? { language: patch.language, languageConfigured: true } : {}),
+    ...(patch.recentWorkspaces ? { recentWorkspaces: patch.recentWorkspaces } : {})
+  })
+  return {
+    language: next.language === 'zh-CN' ? 'zh-CN' : 'en',
+    recentWorkspaces: normalizeRecentWorkspaces(next.recentWorkspaces)
+  }
+}
+
+function normalizeSettings(settings: ProviderSettings): ProviderSettings {
+  const models = Array.from(new Set((settings.providerModels ?? [])
+    .filter((model): model is string => typeof model === 'string' && model.trim().length > 0)
+    .map((model) => model.trim())))
+  const fallback = settings.providerModel?.trim() || 'deepseek-chat'
+  if (!models.includes(fallback)) models.unshift(fallback)
+  return {
+    ...settings,
+    providerModel: fallback,
+    providerModels: models,
+    providerMaxTokens: Math.min(32768, Math.max(256, Number(settings.providerMaxTokens) || 4096)),
+    language: settings.language === 'zh-CN' ? 'zh-CN' : 'en',
+    recentWorkspaces: normalizeRecentWorkspaces(settings.recentWorkspaces)
+  }
+}
+
+function normalizeRecentWorkspaces(paths: unknown): string[] {
+  if (!Array.isArray(paths)) return []
+  return Array.from(new Set(paths.filter((item): item is string => typeof item === 'string' && item.trim().length > 0))).slice(0, 5)
+}
+
 /** 测试用:把缓存清掉,下一次 load 重新读盘 */
 export function __resetPersistenceForTest(): void {
   sessionsCache = null
   settingsCache = null
+  sessionsReadFailed = false
 }

@@ -19,17 +19,29 @@ const api: MotraApi = {
   killCli: (sessionId: string) => ipcRenderer.invoke('cli:kill', sessionId),
   listSessions: () => ipcRenderer.invoke('cli:list'),
   deleteSession: (sessionId: string) => ipcRenderer.invoke('cli:delete', sessionId),
+  renameTask: (sessionId, title) => ipcRenderer.invoke('task:rename', sessionId, title),
+  updateTaskContext: (sessionId, patch) => ipcRenderer.invoke('task:updateContext', sessionId, patch),
   onCliEvent: (cb: (e: CliEvent) => void) => {
     const listener = (_evt: Electron.IpcRendererEvent, payload: CliEvent): void => cb(payload)
     ipcRenderer.on('cli:event', listener)
     return () => ipcRenderer.removeListener('cli:event', listener)
   },
   getSettings: () => ipcRenderer.invoke('settings:get'),
-  setSettings: (patch: ProviderSettingsView) =>
+  setSettings: (patch: Partial<ProviderSettingsView>) =>
     ipcRenderer.invoke('settings:set', patch),
+  getPreferences: () => ipcRenderer.invoke('preferences:get'),
+  setPreferences: (patch) => ipcRenderer.invoke('preferences:set', patch),
+  selectWorkspace: () => ipcRenderer.invoke('workspace:select'),
+  getGitStatus: (workspacePath) => ipcRenderer.invoke('workspace:getGitStatus', workspacePath),
 
   // scope 相关
   openScope: () => ipcRenderer.invoke('scope:open'),
+  getScopeStatus: () => ipcRenderer.invoke('scope:getStatus'),
+  onScopeStatus: (cb) => {
+    const listener = (_evt: Electron.IpcRendererEvent, status: Parameters<typeof cb>[0]): void => cb(status)
+    ipcRenderer.on('scope:status', listener)
+    return () => ipcRenderer.removeListener('scope:status', listener)
+  },
   serialList: () => ipcRenderer.invoke('serial:list'),
   serialOpen: (cfg: SerialCfgWire) => ipcRenderer.invoke('serial:open', cfg),
   serialClose: () => ipcRenderer.invoke('serial:close'),
